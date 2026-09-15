@@ -50,7 +50,7 @@ export interface TradeHistoryItem {
   id: string
   timestamp: number
   type: 'BUY' | 'SELL'
-  token: `0x${string}`
+  token?: `0x${string}`
   wallet?: `0x${string}`
   symbol: string
   amountIn: string

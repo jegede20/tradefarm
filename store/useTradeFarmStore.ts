@@ -2,7 +2,7 @@
 
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
-import { formatUnits, parseUnits, type Address } from 'viem'
+import { formatUnits, isAddress, parseUnits, type Address } from 'viem'
 import type {
   BotConfig,
   BotLog,
@@ -73,6 +73,10 @@ function positionRaw(position: Pick<Position, 'amount' | 'amountRaw'>) {
 
 function ownerMatches(owner: string | undefined, wallet: string) {
   return !owner || owner.toLowerCase() === wallet.toLowerCase()
+}
+
+function validStoredAddress(value: unknown): value is Address {
+  return typeof value === 'string' && isAddress(value)
 }
 
 function mergeRecentTradeRows(existing: RecentTrade[], incoming: RecentTrade[], tokens: Token[]) {
@@ -346,14 +350,39 @@ export const useTradeFarmStore = create<TradeFarmState>()(
     }),
     {
       name: 'tradefarm-terminal-v2',
-      version: 6,
+      version: 7,
       storage: createJSONStorage(() => localStorage),
       skipHydration: true,
       migrate: (persistedState) => {
         const previous = persistedState as Partial<TradeFarmState>
         const botConfig = { ...defaultBotConfig, ...previous.botConfig }
+        const positions = (Array.isArray(previous.positions) ? previous.positions : [])
+          .filter((position) => position && validStoredAddress(position.token))
+          .map((position) => ({
+            ...position,
+            wallet: validStoredAddress(position.wallet) ? position.wallet : undefined,
+            pair: validStoredAddress(position.pair) ? position.pair : undefined,
+          }))
+        const tradeHistory = (Array.isArray(previous.tradeHistory) ? previous.tradeHistory : [])
+          .filter((trade) => trade && typeof trade === 'object')
+          .map((trade) => ({
+            ...trade,
+            token: validStoredAddress(trade.token) ? trade.token : undefined,
+            wallet: validStoredAddress(trade.wallet) ? trade.wallet : undefined,
+          }))
+        const botPosition = previous.botPosition && validStoredAddress(previous.botPosition.token)
+          ? {
+              ...previous.botPosition,
+              wallet: validStoredAddress(previous.botPosition.wallet) ? previous.botPosition.wallet : undefined,
+              pair: validStoredAddress(previous.botPosition.pair) ? previous.botPosition.pair : undefined,
+            }
+          : null
         return {
           ...previous,
+          watchlist: (Array.isArray(previous.watchlist) ? previous.watchlist : []).filter(validStoredAddress),
+          positions,
+          tradeHistory,
+          botPosition,
           botConfig: {
             ...botConfig,
             maxSessionLoss: Math.max(100, botConfig.maxSessionLoss),
