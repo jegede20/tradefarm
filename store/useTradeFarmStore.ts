@@ -142,6 +142,7 @@ interface TradeFarmState {
   networkConnected: boolean
   marketActivityReady: boolean
   marketActivityTokenCount: number
+  marketActivityError: string | null
   setTokens: (tokens: Token[]) => void
   upsertToken: (token: Token) => void
   updateToken: (address: string, patch: Partial<Token>) => void
@@ -168,7 +169,7 @@ interface TradeFarmState {
   recordBotTrade: (profit: number, volume: number) => void
   setBotLeaderboardRank: (rank: number | null) => void
   setNetworkConnected: (connected: boolean) => void
-  setMarketActivityStatus: (ready: boolean, tokenCount?: number) => void
+  setMarketActivityStatus: (ready: boolean, tokenCount?: number, error?: string | null) => void
 }
 
 export const useTradeFarmStore = create<TradeFarmState>()(
@@ -202,6 +203,7 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       networkConnected: false,
       marketActivityReady: false,
       marketActivityTokenCount: 0,
+      marketActivityError: null,
 
       setTokens: (tokens) => set((state) => ({
         tokens,
@@ -332,7 +334,7 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       })),
       setBotLeaderboardRank: (botLeaderboardRank) => set({ botLeaderboardRank }),
       setNetworkConnected: (networkConnected) => set({ networkConnected }),
-      setMarketActivityStatus: (marketActivityReady, marketActivityTokenCount = 0) => set({ marketActivityReady, marketActivityTokenCount }),
+      setMarketActivityStatus: (marketActivityReady, marketActivityTokenCount = 0, marketActivityError = null) => set({ marketActivityReady, marketActivityTokenCount, marketActivityError }),
     }),
     {
       name: 'tradefarm-terminal-v2',

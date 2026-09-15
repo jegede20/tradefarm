@@ -25,6 +25,7 @@ export function useBotRunner() {
   const liquidityLocks = useRef(new Map<string, LiquidityLockSnapshot>())
   const cooldownTokens = useRef(new Map<string, number>())
   const rpcFailureStreak = useRef(0)
+  const activityWaitLoggedAt = useRef(0)
   const sessionWallet = useRef<Address | null>(null)
   const mounted = useRef(true)
 
@@ -84,7 +85,11 @@ export function useBotRunner() {
       }
 
       if (!state.botPosition && config.mode === 'auto' && !state.marketActivityReady) {
-        log('WAIT', 'Indexing recent Hub activity before the first quality scan…')
+        const now = Date.now()
+        if (now - activityWaitLoggedAt.current >= 30_000) {
+          log('WAIT', state.marketActivityError ?? 'Indexing recent Hub activity before the first quality scan…')
+          activityWaitLoggedAt.current = now
+        }
         nextDelay = 5_000
         return
       }
@@ -331,6 +336,7 @@ export function useBotRunner() {
     if (config.deadline !== null && config.deadline <= Date.now()) { log('ERROR', 'Choose a future session deadline.'); return }
     if (intervalRef.current !== null) window.clearInterval(intervalRef.current)
     sessionWallet.current = address
+    activityWaitLoggedAt.current = 0
     signalHistory.current.clear()
     useTradeFarmStore.getState().resetBotSession()
     useTradeFarmStore.getState().setBotStatus('running')

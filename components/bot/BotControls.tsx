@@ -28,6 +28,7 @@ export function BotControls() {
   const leaderboardRank = useTradeFarmStore((state) => state.botLeaderboardRank)
   const marketActivityReady = useTradeFarmStore((state) => state.marketActivityReady)
   const marketActivityTokenCount = useTradeFarmStore((state) => state.marketActivityTokenCount)
+  const marketActivityError = useTradeFarmStore((state) => state.marketActivityError)
   const setConfig = useTradeFarmStore((state) => state.setBotConfig)
   const { startBot, stopBot, leaderboardSource, leaderboardLoading } = useBotRunnerControls()
   const { data: usdcRaw } = useReadContract({
@@ -152,7 +153,7 @@ export function BotControls() {
             </div>
             {config.mode === 'manual' ? (
               <input value={config.manualToken} onChange={(event) => setConfig({ manualToken: event.target.value })} placeholder="0x… token address" className="input-terminal h-10 text-[11px]" />
-            ) : <div className="space-y-2"><p className="text-[10px] leading-relaxed text-text-secondary">Backfills recent Hub activity, ranks active pools before entry, trades one token at a time, then rotates after a two-scan cooldown.</p><p className={`font-mono text-[9px] ${marketActivityReady ? 'text-success' : 'text-warning'}`}>{marketActivityReady ? `${marketActivityTokenCount} ACTIVE TOKENS INDEXED` : 'INDEXING RECENT HUB ACTIVITY…'}</p></div>}
+            ) : <div className="space-y-2"><p className="text-[10px] leading-relaxed text-text-secondary">Backfills recent Hub activity, ranks active pools before entry, trades one token at a time, then rotates after a two-scan cooldown.</p><p className={`font-mono text-[9px] ${marketActivityReady ? 'text-success' : 'text-warning'}`}>{marketActivityReady ? `${marketActivityTokenCount} ACTIVE TOKENS INDEXED` : marketActivityError ?? 'INDEXING RECENT HUB ACTIVITY…'}</p></div>}
           </ConfigSection>
         </fieldset>
 

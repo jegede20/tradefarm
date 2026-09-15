@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import {
   createPublicClient,
   formatUnits,
+  http,
   isAddress,
   webSocket,
   type Address,
@@ -26,6 +27,14 @@ const BLOCK_TIME_MS = 505
 function isTransientRpcFailure(cause: unknown) {
   const message = cause instanceof Error ? cause.message : String(cause)
   return /http request failed|failed to fetch|fetch failed|network error|timeout|timed out|socket|429|rate.?limit|limit exceeded|econn|temporarily unavailable/i.test(message)
+}
+
+function activityFailureMessage(cause: unknown) {
+  const message = cause instanceof Error ? cause.message : String(cause)
+  if (/429|rate.?limit|limit exceeded|-32005/i.test(message)) return 'Arc RPC rate limit reached; retrying bounded backfill…'
+  if (/timeout|timed out/i.test(message)) return 'Arc RPC backfill timed out; retrying over HTTP…'
+  if (/failed to fetch|fetch failed|network error|socket|websocket|econn/i.test(message)) return 'Arc RPC connection interrupted; retrying over HTTP…'
+  return 'Recent Hub activity could not be indexed; retrying…'
 }
 
 async function withRpcRetry<T>(operation: () => Promise<T>) {
@@ -173,7 +182,18 @@ export function useTokenDiscovery() {
     const pendingMarketRefresh = new Set<Address>()
     const marketRetryAfter = new Map<string, number>()
     const store = useTradeFarmStore
-    store.getState().setMarketActivityStatus(false, 0)
+    // Keep WebSocket traffic subscription-only. Arc currently rate-limits a
+    // burst of bounded eth_getLogs calls on that transport, while the same
+    // backfill and Multicall3 reads complete reliably over HTTP.
+    const readClient = createPublicClient({
+      chain: arcTestnet,
+      transport: http('https://rpc.testnet.arc.io', {
+        retryCount: 1,
+        retryDelay: 350,
+        timeout: 15_000,
+      }),
+    })
+    store.getState().setMarketActivityStatus(false, 0, null)
 
     const mergeMarkets = (snapshots: Token[]) => {
       if (snapshots.length === 0 || stopped) return
@@ -245,10 +265,13 @@ export function useTokenDiscovery() {
         mergeMarkets(snapshots)
         const cutoff = Date.now() - 10 * 60_000
         const indexedTokenCount = new Set(currentTrades.filter((trade) => trade.timestamp >= cutoff).map((trade) => trade.token.toLowerCase())).size
-        store.getState().setMarketActivityStatus(true, indexedTokenCount)
+        store.getState().setMarketActivityStatus(true, indexedTokenCount, null)
         healthy()
-      } catch {
+      } catch (cause) {
         store.getState().setNetworkConnected(false)
+        if (!store.getState().marketActivityReady) {
+          store.getState().setMarketActivityStatus(false, 0, activityFailureMessage(cause))
+        }
         if (full && !stopped && !store.getState().marketActivityReady && activityRetryTimer === null) {
           activityRetryTimer = window.setTimeout(() => {
             activityRetryTimer = null
@@ -302,7 +325,7 @@ export function useTokenDiscovery() {
             const trades = parseHubTrades(logs, latestBlock, Date.now(), BLOCK_TIME_MS, store.getState().tokens)
             if (trades.length === 0) return
             store.getState().mergeRecentTrades(trades)
-            queueMarketRefresh(client, [...new Map(trades.map((trade) => [trade.token.toLowerCase(), trade.token])).values()])
+            queueMarketRefresh(readClient, [...new Map(trades.map((trade) => [trade.token.toLowerCase(), trade.token])).values()])
           },
           onError: reconnect,
         })
@@ -316,7 +339,7 @@ export function useTokenDiscovery() {
               lastSelectedRefresh = now
               const selected = store.getState().selectedToken
               if (isAddress(selected)) {
-                void updateSelectedMarket(client, selected).then((market) => {
+                void updateSelectedMarket(readClient, selected).then((market) => {
                   store.getState().addPricePoint({ time: now, price: market.price })
                 }).catch(() => undefined)
               }
@@ -324,7 +347,7 @@ export function useTokenDiscovery() {
             if (now - lastActivitySync >= 60_000) {
               const full = lastActivitySync === 0
               lastActivitySync = now
-              void syncActivity(client, full)
+              void syncActivity(readClient, full)
             }
           },
           onError: reconnect,
@@ -332,7 +355,7 @@ export function useTokenDiscovery() {
         cleanups.push(unwatchHub, unwatchBlocks)
         if (lastActivitySync === 0) {
           lastActivitySync = Date.now()
-          void syncActivity(client, true)
+          void syncActivity(readClient, true)
         }
       } catch {
         reconnect()
