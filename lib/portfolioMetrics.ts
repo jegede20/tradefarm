@@ -10,7 +10,11 @@ export function calculateRealizedPnl(history: TradeHistoryItem[]) {
   let realizedPnl = 0
   let matchedSells = 0
 
-  for (const trade of [...history].sort((left, right) => left.timestamp - right.timestamp)) {
+  for (const trade of [...history].sort((left, right) => (Number(left?.timestamp) || 0) - (Number(right?.timestamp) || 0))) {
+    // Older TradeFarm browser schemas may contain history rows without token
+    // ownership metadata. Keep rendering those rows, but exclude them from
+    // cost-basis math instead of crashing portfolio hydration.
+    if (!trade || typeof trade.token !== 'string' || !trade.token) continue
     const key = trade.token.toLowerCase()
     const amountIn = Number(trade.amountIn)
     const amountOut = Number(trade.amountOut)
