@@ -8,7 +8,7 @@ import type { LeaderboardRow } from '@/types/trading'
 
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')
 
-export function useLeaderboard() {
+export function useLeaderboard(enabled = true) {
   const publicClient = usePublicClient()
   const [rows, setRows] = useState<LeaderboardRow[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -77,7 +77,9 @@ export function useLeaderboard() {
     }
   }, [publicClient])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    if (enabled) void refresh()
+  }, [enabled, refresh])
 
   return { rows, isLoading, lastUpdated, refresh, source }
 }

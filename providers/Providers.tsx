@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useState, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WagmiProvider } from 'wagmi'
 import { wagmiConfig } from '@/lib/wagmiConfig'
 import { useTokenDiscovery } from '@/hooks/useTokenDiscovery'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
+import { BotRunnerProvider } from './BotRunnerProvider'
 
 function NetworkRuntime() {
   useTokenDiscovery()
@@ -19,15 +20,19 @@ export function Providers({ children }: { children: ReactNode }) {
     },
   }))
 
-  useEffect(() => {
+  // Hydrate persisted positions/history before child effects can publish live
+  // network state and overwrite an older storage schema.
+  useLayoutEffect(() => {
     void useTradeFarmStore.persist.rehydrate()
   }, [])
 
   return (
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
-        <NetworkRuntime />
-        {children}
+        <BotRunnerProvider>
+          <NetworkRuntime />
+          {children}
+        </BotRunnerProvider>
       </QueryClientProvider>
     </WagmiProvider>
   )

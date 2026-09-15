@@ -92,6 +92,13 @@ export function useExecuteTrade() {
         if (approvalReceipt.status !== 'success') throw new Error('USDC approval reverted')
       }
 
+      const tokenBalanceBefore = await client.publicClient.readContract({
+        address: tokenAddress,
+        abi: ERC20_ABI,
+        functionName: 'balanceOf',
+        args: [client.address],
+      })
+
       setStatus('pending')
       const swapHash = await client.walletClient.sendTransaction({
         account: client.address,
@@ -109,7 +116,15 @@ export function useExecuteTrade() {
         throw new Error(`Receipt integrity check failed: expected 4 Transfer logs, received ${transferLogs.length}`)
       }
 
-      const tokenAmount = Number(formatUnits(quotedOut, 18))
+      const tokenBalanceAfter = await client.publicClient.readContract({
+        address: tokenAddress,
+        abi: ERC20_ABI,
+        functionName: 'balanceOf',
+        args: [client.address],
+      })
+      const actualOut = tokenBalanceAfter - tokenBalanceBefore
+      if (actualOut <= 0n) throw new Error('Receipt confirmed, but no purchased tokens reached the connected wallet')
+      const tokenAmount = Number(formatUnits(actualOut, 18))
       const usdcAmount = Number(formatUnits(amountIn, 6))
       const price = tokenAmount > 0 ? usdcAmount / tokenAmount : 0
       upsertPosition({
@@ -128,13 +143,13 @@ export function useExecuteTrade() {
         token: tokenAddress,
         symbol,
         amountIn: formatUnits(amountIn, 6),
-        amountOut: formatUnits(quotedOut, 18),
+        amountOut: formatUnits(actualOut, 18),
         price,
         hash: swapHash,
       })
       setReceiptBlock(receipt.blockNumber)
       setStatus('success')
-      return { hash: swapHash, receipt, amountOut: quotedOut, transferLogs: transferLogs.length }
+      return { hash: swapHash, receipt, amountOut: actualOut, quotedOut, transferLogs: transferLogs.length }
     } catch (cause) {
       const message = friendlyContractError(cause)
       setError(message)
@@ -180,6 +195,13 @@ export function useExecuteTrade() {
         if (approvalReceipt.status !== 'success') throw new Error('Token approval reverted')
       }
 
+      const usdcBalanceBefore = await client.publicClient.readContract({
+        address: USDC_ADDRESS,
+        abi: ERC20_ABI,
+        functionName: 'balanceOf',
+        args: [client.address],
+      })
+
       setStatus('pending')
       const sellHash = await client.walletClient.sendTransaction({
         account: client.address,
@@ -191,8 +213,15 @@ export function useExecuteTrade() {
       const receipt = await client.publicClient.waitForTransactionReceipt({ hash: sellHash })
       if (receipt.status !== 'success') throw new Error('sell() reverted')
 
+      const usdcBalanceAfter = await client.publicClient.readContract({
+        address: USDC_ADDRESS,
+        abi: ERC20_ABI,
+        functionName: 'balanceOf',
+        args: [client.address],
+      })
+      const actualOut = usdcBalanceAfter > usdcBalanceBefore ? usdcBalanceAfter - usdcBalanceBefore : quotedOut
       const tokenAmount = Number(formatUnits(amountIn, 18))
-      const usdcAmount = Number(formatUnits(quotedOut, 6))
+      const usdcAmount = Number(formatUnits(actualOut, 6))
       reducePosition(tokenAddress, tokenAmount)
       addTradeHistory({
         id: sellHash,
@@ -201,13 +230,13 @@ export function useExecuteTrade() {
         token: tokenAddress,
         symbol,
         amountIn: formatUnits(amountIn, 18),
-        amountOut: formatUnits(quotedOut, 6),
+        amountOut: formatUnits(actualOut, 6),
         price: tokenAmount > 0 ? usdcAmount / tokenAmount : 0,
         hash: sellHash,
       })
       setReceiptBlock(receipt.blockNumber)
       setStatus('success')
-      return { hash: sellHash, receipt, amountOut: quotedOut }
+      return { hash: sellHash, receipt, amountOut: actualOut, quotedOut }
     } catch (cause) {
       const message = friendlyContractError(cause)
       setError(message)

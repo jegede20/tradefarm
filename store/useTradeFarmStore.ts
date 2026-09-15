@@ -65,6 +65,29 @@ const seedTrades: RecentTrade[] = [
 
 const seedPositions: Position[] = []
 
+const defaultBotConfig: BotConfig = {
+  tradeSize: 5_000,
+  takeProfitPct: 7,
+  stopLossPct: 5,
+  slippagePct: 1.5,
+  delaySeconds: 20,
+  mode: 'auto',
+  manualToken: '',
+  objectiveMode: 'reach',
+  targetRank: 50,
+  sessionProfitTarget: 5_000,
+  maxSessionLoss: 2_500,
+  maxHoldSeconds: 240,
+  stagnantChecksLimit: 3,
+  stagnationThresholdPct: 0.25,
+  trailingActivationPct: 5,
+  trailingDistancePct: 2,
+  maxPriceImpactPct: 2,
+  maxLiquiditySharePct: 1,
+  maxConsecutiveLosses: 3,
+  deadline: null,
+}
+
 interface TradeFarmState {
   tokens: Token[]
   watchlist: string[]
@@ -79,6 +102,12 @@ interface TradeFarmState {
   botPosition: BotPosition | null
   botNextActionAt: number | null
   botTokensScanned: number
+  botSessionStartedAt: number | null
+  botRealizedPnl: number
+  botSessionVolume: number
+  botCompletedTrades: number
+  botConsecutiveLosses: number
+  botLeaderboardRank: number | null
   lastBotAction: number | null
   networkConnected: boolean
   setTokens: (tokens: Token[]) => void
@@ -98,6 +127,9 @@ interface TradeFarmState {
   setBotPosition: (position: BotPosition | null) => void
   setBotNextActionAt: (timestamp: number | null) => void
   setBotTokensScanned: (count: number) => void
+  resetBotSession: () => void
+  recordBotTrade: (profit: number, volume: number) => void
+  setBotLeaderboardRank: (rank: number | null) => void
   setNetworkConnected: (connected: boolean) => void
 }
 
@@ -118,18 +150,16 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       ],
       recentTrades: seedTrades,
       tradeHistory: [],
-      botConfig: {
-        tradeSize: 5_000,
-        takeProfitPct: 20,
-        stopLossPct: 15,
-        slippagePct: 1.5,
-        delaySeconds: 30,
-        mode: 'auto',
-        manualToken: '',
-      },
+      botConfig: defaultBotConfig,
       botPosition: null,
       botNextActionAt: null,
       botTokensScanned: 0,
+      botSessionStartedAt: null,
+      botRealizedPnl: 0,
+      botSessionVolume: 0,
+      botCompletedTrades: 0,
+      botConsecutiveLosses: 0,
+      botLeaderboardRank: null,
       lastBotAction: null,
       networkConnected: false,
 
@@ -182,17 +212,41 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       setBotPosition: (botPosition) => set({ botPosition }),
       setBotNextActionAt: (botNextActionAt) => set({ botNextActionAt }),
       setBotTokensScanned: (botTokensScanned) => set({ botTokensScanned }),
+      resetBotSession: () => set({
+        botSessionStartedAt: Date.now(),
+        botRealizedPnl: 0,
+        botSessionVolume: 0,
+        botCompletedTrades: 0,
+        botConsecutiveLosses: 0,
+        botTokensScanned: 0,
+      }),
+      recordBotTrade: (profit, volume) => set((state) => ({
+        botRealizedPnl: state.botRealizedPnl + profit,
+        botSessionVolume: state.botSessionVolume + volume,
+        botCompletedTrades: state.botCompletedTrades + 1,
+        botConsecutiveLosses: profit < 0 ? state.botConsecutiveLosses + 1 : 0,
+      })),
+      setBotLeaderboardRank: (botLeaderboardRank) => set({ botLeaderboardRank }),
       setNetworkConnected: (networkConnected) => set({ networkConnected }),
     }),
     {
       name: 'tradefarm-terminal-v2',
+      version: 3,
       storage: createJSONStorage(() => localStorage),
       skipHydration: true,
+      migrate: (persistedState) => {
+        const previous = persistedState as Partial<TradeFarmState>
+        return {
+          ...previous,
+          botConfig: { ...defaultBotConfig, ...previous.botConfig },
+        } as TradeFarmState
+      },
       partialize: (state) => ({
         watchlist: state.watchlist,
         positions: state.positions,
         tradeHistory: state.tradeHistory,
         botConfig: state.botConfig,
+        botPosition: state.botPosition,
       }),
     },
   ),

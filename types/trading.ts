@@ -66,10 +66,15 @@ export interface BotPosition {
   token: `0x${string}`
   symbol: string
   amount: number
+  amountRaw: string
   entryUSDC: number
   entryPrice: number
   currentPrice: number
-  entryBlock: bigint
+  entryBlock: string
+  openedAt: number
+  peakPnlPct: number
+  stagnantChecks: number
+  lastCheckPrice: number
 }
 
 export interface BotConfig {
@@ -80,6 +85,19 @@ export interface BotConfig {
   delaySeconds: number
   mode: 'auto' | 'manual'
   manualToken: string
+  objectiveMode: 'reach' | 'defend'
+  targetRank: number
+  sessionProfitTarget: number
+  maxSessionLoss: number
+  maxHoldSeconds: number
+  stagnantChecksLimit: number
+  stagnationThresholdPct: number
+  trailingActivationPct: number
+  trailingDistancePct: number
+  maxPriceImpactPct: number
+  maxLiquiditySharePct: number
+  maxConsecutiveLosses: number
+  deadline: number | null
 }
 
 export interface LeaderboardRow {

@@ -26,7 +26,7 @@ Native gas:  USDC (18 decimals)
 - `/` — three-column live pool terminal
 - `/portfolio` — positions, balances, PnL, quick sell, and local trade history
 - `/leaderboard` — wallets derived from router-linked Flipt USDC transfers
-- `/bot` — in-browser recent-pool scanner and execution log
+- `/bot` — one-position rotation engine, objectives, guardrails, session metrics, and 200-line execution log
 
 ## Contract handling
 
@@ -47,7 +47,8 @@ Contract safeguards:
 - Approval receipts are awaited before trade submission.
 - Trade receipts are awaited before local state changes.
 - Pool buys are accepted into local state only when the receipt contains exactly four ERC-20 `Transfer` logs.
-- Trade history is persisted in browser localStorage.
+- Confirmed wallet balance deltas, rather than pre-trade quote estimates, populate purchased and received amounts.
+- Trade history and an open bot position are persisted in browser localStorage.
 
 ## Live market runtime
 
@@ -57,7 +58,15 @@ The bounded scan is intentional: the live Hub contains more than twenty thousand
 
 ## Bot
 
-The bot runs in the active browser tab with `setInterval`. Auto mode evaluates recent graduated pools with at least 1,000 USDC liquidity and ranks reserve depth plus short-term price momentum. Manual mode resolves the exact token entered by the user. Sold tokens remain on cooldown for two scan iterations.
+The bot is a sequential rotation engine that runs only in the active browser tab with `setInterval`; there is no server worker or custody layer. Its runtime remains mounted while navigating between TradeFarm routes. It opens at most one bot position, waits for the buy receipt, manages that position, waits for the sell receipt, and then scans again after a short rotation delay. Sold tokens remain excluded for two complete scan iterations.
+
+Auto mode evaluates recent graduated pools with at least 1,000 USDC liquidity and ranks reserve depth plus short-term price momentum. Manual mode resolves only the exact token address entered by the user and skips scanning. Entry size is capped by wallet balance, configured reserve share, and estimated pool impact.
+
+Each session can target a recent-transfer leaderboard rank or realized-USDC profit. Reach mode stops at the objective; Defend mode pauses new entries while the estimated rank holds and resumes if it slips. The leaderboard rank is a clearly labeled TradeFarm estimate derived from recent router-linked Flipt USDC transfers, not an official final Flipt rank.
+
+Position exits include take profit, stop loss, trailing stop, maximum hold time, stagnation, deadline, objective completion, and projected session drawdown. Session protections include maximum realized loss and a consecutive-loss circuit breaker. The scheduler never waits beyond the configured hold deadline even when the normal quote interval is longer.
+
+Stopping the bot prevents new actions but does not submit a sell merely because the user pressed Stop. Any already submitted wallet request is allowed to settle, and the open position remains available to resume or sell manually.
 
 ## Validation
 
