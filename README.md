@@ -1,6 +1,6 @@
 # TradeFarm
 
-A dark, trade-only Web3 terminal for Arc Testnet. Built with Next.js 14 App Router, TypeScript, Tailwind, wagmi, viem, Zustand, React Query, and Recharts.
+Trade-only terminal for graduated Flipt pools on Arc Testnet. Built with Next.js 14, TypeScript, Tailwind, wagmi, viem, Zustand, React Query, and Recharts.
 
 ## Run locally
 
@@ -9,40 +9,55 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000` and connect an injected EIP-1193 wallet. TradeFarm requests Arc Testnet automatically.
+Open `http://localhost:3000` in an injected wallet browser. TradeFarm requests Arc Testnet automatically.
 
 ```text
-Network:  Arc Testnet
-Chain ID: 5042002
-RPC:      https://rpc.testnet.arc.io
-Explorer: https://testnet.arcscan.app
+Network:     Arc Testnet
+Chain ID:    5042002
+RPC:         https://rpc.testnet.arc.io
+Explorer:    https://testnet.arcscan.app
+Flipt Hub:   0x4B33146F2bCc75574534374C85662f9E51C38Aca
+Flipt USDC:  0x4F3b8005d6b3F4994a791D971bcD153E114D20c2 (6 decimals)
+Native gas:  USDC (18 decimals)
 ```
 
 ## Routes
 
-- `/` — three-column live trading terminal
-- `/portfolio` — positions, balances, PnL, quick sell, and locally persisted trade history
-- `/leaderboard` — top wallets derived from the latest 500 router-linked USDC Transfer events
-- `/bot` — in-browser auto-scan/manual trading loop and 200-line terminal log
+- `/` — three-column live pool terminal
+- `/portfolio` — positions, balances, PnL, quick sell, and local trade history
+- `/leaderboard` — wallets derived from router-linked Flipt USDC transfers
+- `/bot` — in-browser recent-pool scanner and execution log
 
-## Contract safety rules
+## Contract handling
 
-- USDC contract inputs use `parseUnits(value, 6)`.
-- Meme-token contract inputs use `parseUnits(value, 18)`.
-- USDC display values use `formatUnits(value, 6)`.
-- Token display values use `formatUnits(value, 18)`.
-- Native gas balance is displayed with `formatEther` only.
-- Approvals and trades are awaited before client state is changed.
-- A BUY is accepted into local state only after its successful receipt contains exactly four `Transfer` logs.
-- Confirmed deployment selectors `0xc3b88b53` (buy) and `0xcf6bc454` (sell) are prepended to ABI-encoded `(address,uint256,uint256)` parameters. This is intentional because those deployment selectors differ from selectors derived from the supplied human-readable function names.
+The deployed Flipt Hub exposes `allPairsLength`, `allPairs`, `getPair`, `launchCount`, `launches`, and `launchOf`; it does not expose the originally assumed `totalTokens` or `getBondingCurveState` methods. TradeFarm discovers graduated markets through the Hub pair registry and derives price and quotes from each pair's `getReserves` state.
 
-## Live data
+Observed Arc transactions confirm:
 
-`useTokenDiscovery` uses Arc's WebSocket endpoint. It maintains a router Transfer subscription, per-token Transfer subscriptions for live trade inference, block-driven price refreshes, and exponential-backoff reconnection. Seed market data keeps the interface useful when the public testnet or a preview browser is offline; live discoveries are upserted into the same store.
+- Pool buy selector: `0xc3b88b53`
+- Sell selector: `0x6a272462` (`sell(address,uint256,uint256)`)
+- Curve buy selector: `0xa59ac6dd`
+- Graduate selector: `0xff6d8d05`
 
-## Bot execution
+Contract safeguards:
 
-The bot is entirely browser-side. `useBotRunner` starts a `setInterval`, scans all router tokens, filters graduated/illiquid/zero-supply curves, scores momentum and normalized liquidity, and executes through the same receipt-safe trading actions used by the dashboard. A sold token receives a two-iteration cooldown. Closing or refreshing the browser stops the loop.
+- Flipt USDC inputs use `parseUnits(value, 6)`.
+- Token inputs use `parseUnits(value, 18)`.
+- Native gas is shown with `formatEther` only.
+- Approval receipts are awaited before trade submission.
+- Trade receipts are awaited before local state changes.
+- Pool buys are accepted into local state only when the receipt contains exactly four ERC-20 `Transfer` logs.
+- Trade history is persisted in browser localStorage.
+
+## Live market runtime
+
+`useTokenDiscovery` subscribes to raw Flipt Hub events over Arc WebSocket, resolves the transaction selector and token address, reads pool reserves, and updates the ticker, chart, and trade feed. It refreshes the selected pool every few seconds, syncs recent pools in bounded batches, and reconnects with exponential backoff.
+
+The bounded scan is intentional: the live Hub contains more than twenty thousand pairs, so sending one browser RPC request per historical pair every loop would freeze mobile wallets and overload the public endpoint.
+
+## Bot
+
+The bot runs in the active browser tab with `setInterval`. Auto mode evaluates recent graduated pools with at least 1,000 USDC liquidity and ranks reserve depth plus short-term price momentum. Manual mode resolves the exact token entered by the user. Sold tokens remain on cooldown for two scan iterations.
 
 ## Validation
 

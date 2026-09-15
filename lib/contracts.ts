@@ -1,13 +1,22 @@
-export const ROUTER_ADDRESS = '0x2c7c1dA8aC860077009Ec5bEA5821E372b0026D5' as const
-export const USDC_ADDRESS = '0x3600000000000000000000000000000000000000' as const
+export const ROUTER_ADDRESS = '0x4B33146F2bCc75574534374C85662f9E51C38Aca' as const
+export const HUB_ADDRESS = ROUTER_ADDRESS
+export const FLIPT_FACTORY_ADDRESS = '0xb9200934941A9010d31733D034b9eAd7a7746d12' as const
+export const ORDERS_ADDRESS = '0x41d7F9CF646b70f7a99Cf62C6C456057C47Ef0E3' as const
+export const USDC_ADDRESS = '0x4F3b8005d6b3F4994a791D971bcD153E114D20c2' as const
+export const ARC_NATIVE_USDC_ADDRESS = '0x3600000000000000000000000000000000000000' as const
 export const USDC_DECIMALS = 6
 export const TOKEN_DECIMALS = 18
-export const SWAP_SELECTOR = '0xc3b88b53' as const
-export const SELL_SELECTOR = '0xcf6bc454' as const
+
+// Selectors observed in successful Flipt Hub transactions on Arc Testnet.
+export const POOL_BUY_SELECTOR = '0xc3b88b53' as const
+export const BUY_SELECTOR = POOL_BUY_SELECTOR
+export const SELL_SELECTOR = '0x6a272462' as const
+export const CURVE_BUY_SELECTOR = '0xa59ac6dd' as const
+export const GRADUATE_SELECTOR = '0xff6d8d05' as const
 
 export const ROUTER_ABI = [
   {
-    name: 'swap', type: 'function', stateMutability: 'nonpayable',
+    name: 'buy', type: 'function', stateMutability: 'nonpayable',
     inputs: [
       { name: 'token', type: 'address' },
       { name: 'amountIn', type: 'uint256' },
@@ -23,29 +32,58 @@ export const ROUTER_ABI = [
     ], outputs: [],
   },
   {
-    name: 'getAmountOut', type: 'function', stateMutability: 'view',
-    inputs: [
-      { name: 'token', type: 'address' },
-      { name: 'amountIn', type: 'uint256' },
-      { name: 'isBuy', type: 'bool' },
-    ], outputs: [{ name: '', type: 'uint256' }],
+    name: 'usdc', type: 'function', stateMutability: 'view',
+    inputs: [], outputs: [{ name: '', type: 'address' }],
   },
   {
-    name: 'totalTokens', type: 'function', stateMutability: 'view',
+    name: 'allPairsLength', type: 'function', stateMutability: 'view',
     inputs: [], outputs: [{ name: '', type: 'uint256' }],
   },
   {
-    name: 'getTokenByIndex', type: 'function', stateMutability: 'view',
+    name: 'allPairs', type: 'function', stateMutability: 'view',
     inputs: [{ name: 'index', type: 'uint256' }],
     outputs: [{ name: '', type: 'address' }],
   },
   {
-    name: 'getBondingCurveState', type: 'function', stateMutability: 'view',
+    name: 'getPair', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'tokenA', type: 'address' }, { name: 'tokenB', type: 'address' }],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    name: 'launchCount', type: 'function', stateMutability: 'view',
+    inputs: [], outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    name: 'launches', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'index', type: 'uint256' }],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    name: 'launchOf', type: 'function', stateMutability: 'view',
     inputs: [{ name: 'token', type: 'address' }],
     outputs: [
-      { name: 'reserve', type: 'uint256' },
-      { name: 'supply', type: 'uint256' },
+      { name: 'exists', type: 'bool' },
       { name: 'graduated', type: 'bool' },
+      { name: 'curveUsdc', type: 'uint256' },
+      { name: 'curveTokens', type: 'uint256' },
+      { name: 'tokenAddress', type: 'address' },
+      { name: 'pair', type: 'address' },
+      { name: 'creator', type: 'address' },
+      { name: 'status', type: 'uint8' },
+      { name: 'creatorFees', type: 'uint256' },
+    ],
+  },
+] as const
+
+export const PAIR_ABI = [
+  { name: 'token0', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
+  { name: 'token1', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
+  {
+    name: 'getReserves', type: 'function', stateMutability: 'view', inputs: [],
+    outputs: [
+      { name: 'reserve0', type: 'uint112' },
+      { name: 'reserve1', type: 'uint112' },
+      { name: 'blockTimestampLast', type: 'uint32' },
     ],
   },
 ] as const
@@ -70,6 +108,7 @@ export const ERC20_ABI = [
       { name: 'spender', type: 'address' },
     ], outputs: [{ name: '', type: 'uint256' }],
   },
+  { name: 'totalSupply', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }] },
   {
     name: 'Transfer', type: 'event',
     inputs: [

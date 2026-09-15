@@ -27,12 +27,12 @@ export function TokenHeader() {
         <div className="text-right">
           <p className="font-mono text-2xl font-semibold tracking-tight text-text-primary sm:text-3xl">{formatPrice(token.price)}</p>
           <p className={cn('mt-0.5 font-mono text-xs', token.priceChange24h >= 0 ? 'text-success' : 'text-danger')}>
-            {token.priceChange24h >= 0 ? '+' : ''}{token.priceChange24h.toFixed(2)}% <span className="text-text-secondary">24H</span>
+            {token.priceChange24h >= 0 ? '+' : ''}{token.priceChange24h.toFixed(2)}% <span className="text-text-secondary">LIVE Δ</span>
           </p>
         </div>
       </div>
       <div className="mt-4 grid grid-cols-3 gap-4 border-t border-border/70 pt-3 sm:flex sm:gap-10">
-        <Stat label="24H volume" value={`$${formatCompact(token.volume)}`} />
+        <Stat label="Session volume" value={`$${formatCompact(token.volume)}`} />
         <Stat label="Reserve" value={`${formatCompact(token.reserve)} USDC`} />
         <Stat label="Supply" value={formatCompact(token.supply)} />
       </div>

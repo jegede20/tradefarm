@@ -8,6 +8,7 @@ import { truncateAddress } from '@/lib/formatters'
 import { NavLinks } from './NavLinks'
 import { Icon } from '@/components/shared/Icons'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
+import { Brand } from './Brand'
 
 export function Topbar() {
   const { address, isConnected, chainId } = useAccount()
@@ -41,10 +42,7 @@ export function Topbar() {
     <header className="fixed inset-x-0 top-0 z-50 h-14 border-b border-border bg-bg-primary/95 backdrop-blur-xl">
       <div className="grid h-full grid-cols-[1fr_auto] items-center px-3 lg:grid-cols-[1fr_auto_1fr] lg:px-5">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="flex h-6 w-6 items-center justify-center rounded bg-accent-primary text-[11px] font-black text-white shadow-[0_0_16px_var(--accent-glow)]">T</span>
-            <span className="text-sm font-bold tracking-[-0.02em] sm:text-base">TradeFarm</span>
-          </div>
+          <Brand />
           <span className="hidden items-center gap-1.5 rounded-full border border-border bg-bg-surface px-2 py-1 text-[9px] font-medium uppercase tracking-wider text-text-secondary sm:flex">
             <span className={`h-1.5 w-1.5 rounded-full ${networkConnected ? 'bg-success shadow-[0_0_6px_var(--success)]' : 'bg-warning'}`} />
             Arc Testnet
@@ -58,7 +56,7 @@ export function Topbar() {
         <div className="flex items-center justify-end gap-2 sm:gap-3">
           <div className="hidden text-right sm:block">
             <p className="font-mono text-xs font-medium text-text-primary">{balance} <span className="text-text-secondary">USDC</span></p>
-            <p className="text-[9px] uppercase tracking-wider text-text-secondary">Trading balance</p>
+            <p className="text-[9px] uppercase tracking-wider text-text-secondary">Flipt balance</p>
           </div>
           <button
             type="button"

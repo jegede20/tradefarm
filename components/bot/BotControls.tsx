@@ -1,16 +1,18 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useAccount } from 'wagmi'
+import { formatUnits } from 'viem'
+import { useAccount, useReadContract } from 'wagmi'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { useBotRunner } from '@/hooks/useBotRunner'
 import { TokenBadge } from '@/components/shared/TokenBadge'
 import { PnLDisplay } from '@/components/shared/PnLDisplay'
 import { Icon } from '@/components/shared/Icons'
 import { cn } from '@/lib/utils'
+import { ERC20_ABI, USDC_ADDRESS } from '@/lib/contracts'
 
 export function BotControls() {
-  const { isConnected } = useAccount()
+  const { address, isConnected } = useAccount()
   const config = useTradeFarmStore((state) => state.botConfig)
   const status = useTradeFarmStore((state) => state.botStatus)
   const position = useTradeFarmStore((state) => state.botPosition)
@@ -18,8 +20,17 @@ export function BotControls() {
   const scanned = useTradeFarmStore((state) => state.botTokensScanned)
   const setConfig = useTradeFarmStore((state) => state.setBotConfig)
   const { startBot, stopBot } = useBotRunner()
+  const { data: usdcRaw } = useReadContract({
+    address: USDC_ADDRESS,
+    abi: ERC20_ABI,
+    functionName: 'balanceOf',
+    args: address ? [address] : undefined,
+    query: { enabled: Boolean(address), refetchInterval: 4_000 },
+  })
   const [countdown, setCountdown] = useState(0)
   const running = status === 'running'
+  const availableUsdc = usdcRaw === undefined ? null : Number(formatUnits(usdcRaw, 6))
+  const insufficientBalance = availableUsdc !== null && availableUsdc < config.tradeSize
 
   useEffect(() => {
     const update = () => setCountdown(nextActionAt ? Math.max(0, Math.ceil((nextActionAt - Date.now()) / 1_000)) : 0)
@@ -64,15 +75,20 @@ export function BotControls() {
             </div>
             {config.mode === 'manual' ? (
               <input value={config.manualToken} onChange={(event) => setConfig({ manualToken: event.target.value })} placeholder="0x… token address" className="input-terminal mt-2 h-10 text-[11px]" />
-            ) : <p className="mt-2 text-[10px] leading-relaxed text-text-secondary">Scans every active bonding curve and chooses the highest risk-adjusted momentum score.</p>}
+            ) : <p className="mt-2 text-[10px] leading-relaxed text-text-secondary">Reviews recent graduated Flipt pools and ranks liquidity plus short-term momentum.</p>}
           </div>
         </fieldset>
 
         <div className="grid grid-cols-2 gap-3 border-t border-border pt-5">
-          <button type="button" onClick={startBot} disabled={!isConnected || running} className="flex h-11 items-center justify-center gap-2 rounded-md bg-success text-xs font-bold uppercase tracking-wider text-white transition hover:bg-green-400 disabled:cursor-not-allowed disabled:opacity-30"><Icon name="power" className="h-3.5 w-3.5" /> Start bot</button>
+          <button type="button" onClick={startBot} disabled={!isConnected || running || insufficientBalance} className="flex h-11 items-center justify-center gap-2 rounded-md bg-success text-xs font-bold uppercase tracking-wider text-white transition hover:bg-green-400 disabled:cursor-not-allowed disabled:opacity-30"><Icon name="power" className="h-3.5 w-3.5" /> Start bot</button>
           <button type="button" onClick={stopBot} disabled={!running} className="flex h-11 items-center justify-center gap-2 rounded-md bg-danger text-xs font-bold uppercase tracking-wider text-white transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-30"><span className="h-2.5 w-2.5 rounded-[2px] bg-white" /> Stop bot</button>
         </div>
         {!isConnected && <p className="text-center text-[10px] text-warning">Connect a wallet on Arc Testnet to enable execution.</p>}
+        {isConnected && insufficientBalance && (
+          <p className="rounded-md border border-warning/25 bg-warning/5 px-3 py-2 font-mono text-[10px] leading-relaxed text-warning">
+            Trade size exceeds your Flipt USDC balance ({availableUsdc?.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDC). Lower the slider to continue.
+          </p>
+        )}
 
         {running && position && (
           <div className="rounded-md border border-accent-primary/30 bg-accent-primary/5 p-4">

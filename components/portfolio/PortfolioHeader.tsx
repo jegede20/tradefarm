@@ -30,9 +30,8 @@ export function PortfolioHeader() {
   const native = nativeBalance ? Number(formatEther(nativeBalance.value)) : 0
 
   return (
-    <section className="panel relative overflow-hidden rounded-lg p-5 sm:p-6">
-      <div className="pointer-events-none absolute right-0 top-0 h-40 w-80 bg-[radial-gradient(circle_at_top_right,rgba(124,58,237,.16),transparent_60%)]" />
-      <div className="relative flex flex-wrap items-end justify-between gap-6">
+    <section className="panel overflow-hidden rounded-lg p-5 sm:p-6">
+      <div className="flex flex-wrap items-end justify-between gap-6">
         <div>
           <p className="panel-title">Total portfolio value</p>
           <p className="mt-2 font-mono text-3xl font-semibold tracking-tight sm:text-4xl">${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>

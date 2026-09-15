@@ -15,7 +15,8 @@ import {
   type Hash,
 } from 'viem'
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi'
-import { ERC20_ABI, ROUTER_ABI, ROUTER_ADDRESS, SELL_SELECTOR, SWAP_SELECTOR, USDC_ADDRESS } from '@/lib/contracts'
+import { BUY_SELECTOR, ERC20_ABI, ROUTER_ADDRESS, SELL_SELECTOR, USDC_ADDRESS } from '@/lib/contracts'
+import { friendlyContractError, getPairQuote } from '@/lib/flipt'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import type { TxState } from '@/types/trading'
 
@@ -30,8 +31,8 @@ interface ExecuteArgs {
 const tradeParameters = parseAbiParameters('address token, uint256 amountIn, uint256 amountOutMin')
 
 function encodeConfirmedRouterCall(selector: `0x${string}`, token: Address, amountIn: bigint, amountOutMin: bigint) {
-  // The verified Arc deployment uses confirmed selectors that differ from the
-  // canonical selectors derived from the published human-readable ABI.
+  // Pool buys use Flipt's observed low-level selector; parameters remain the
+  // standard (token, amountIn, amountOutMin) tuple used by both trade paths.
   return concatHex([selector, encodeAbiParameters(tradeParameters, [token, amountIn, amountOutMin])])
 }
 
@@ -63,12 +64,9 @@ export function useExecuteTrade() {
       const amountIn = parseUnits(amount, 6)
       if (amountIn <= 0n) throw new Error('Enter a valid USDC amount')
 
-      const quotedOut = expectedOut ?? await client.publicClient.readContract({
-        address: ROUTER_ADDRESS,
-        abi: ROUTER_ABI,
-        functionName: 'getAmountOut',
-        args: [tokenAddress, amountIn, true],
-      })
+      const market = useTradeFarmStore.getState().tokens.find((item) => item.address.toLowerCase() === tokenAddress.toLowerCase())
+      if (!market?.pair) throw new Error('No graduated Flipt pool found for this token')
+      const quotedOut = expectedOut ?? await getPairQuote(client.publicClient, tokenAddress, market.pair, amountIn, true)
       const bps = BigInt(Math.max(0, 10_000 - Math.round(slippagePct * 100)))
       const minOut = (quotedOut * bps) / 10_000n
 
@@ -99,7 +97,7 @@ export function useExecuteTrade() {
         account: client.address,
         chain: client.walletClient.chain,
         to: ROUTER_ADDRESS,
-        data: encodeConfirmedRouterCall(SWAP_SELECTOR, tokenAddress, amountIn, minOut),
+        data: encodeConfirmedRouterCall(BUY_SELECTOR, tokenAddress, amountIn, minOut),
       })
       setHash(swapHash)
       const receipt = await client.publicClient.waitForTransactionReceipt({ hash: swapHash })
@@ -138,7 +136,7 @@ export function useExecuteTrade() {
       setStatus('success')
       return { hash: swapHash, receipt, amountOut: quotedOut, transferLogs: transferLogs.length }
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : 'Buy failed'
+      const message = friendlyContractError(cause)
       setError(message)
       setStatus('failed')
       throw cause
@@ -155,12 +153,9 @@ export function useExecuteTrade() {
       const amountIn = parseUnits(amount, 18)
       if (amountIn <= 0n) throw new Error('Enter a valid token amount')
 
-      const quotedOut = expectedOut ?? await client.publicClient.readContract({
-        address: ROUTER_ADDRESS,
-        abi: ROUTER_ABI,
-        functionName: 'getAmountOut',
-        args: [tokenAddress, amountIn, false],
-      })
+      const market = useTradeFarmStore.getState().tokens.find((item) => item.address.toLowerCase() === tokenAddress.toLowerCase())
+      if (!market?.pair) throw new Error('No graduated Flipt pool found for this token')
+      const quotedOut = expectedOut ?? await getPairQuote(client.publicClient, tokenAddress, market.pair, amountIn, false)
       const bps = BigInt(Math.max(0, 10_000 - Math.round(slippagePct * 100)))
       const minOut = (quotedOut * bps) / 10_000n
 
@@ -214,7 +209,7 @@ export function useExecuteTrade() {
       setStatus('success')
       return { hash: sellHash, receipt, amountOut: quotedOut }
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : 'Sell failed'
+      const message = friendlyContractError(cause)
       setError(message)
       setStatus('failed')
       throw cause

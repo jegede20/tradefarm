@@ -1,14 +1,13 @@
-import { formatUnits, parseUnits, type Address, type PublicClient } from 'viem'
-import { ROUTER_ABI, ROUTER_ADDRESS } from './contracts'
-import type { LogLevel } from '@/types/trading'
+import type { Address } from 'viem'
+import type { LogLevel, Token } from '@/types/trading'
 
 export interface ScannedToken {
   address: Address
-  reserve: bigint
-  supply: bigint
-  graduated: boolean
+  pair: Address
+  reserve: number
   price: number
   score: number
+  market: Token
 }
 
 export function getMinimumOut(expectedOut: bigint, slippagePct: number) {
@@ -17,58 +16,41 @@ export function getMinimumOut(expectedOut: bigint, slippagePct: number) {
 }
 
 export async function scanBestToken({
-  publicClient,
+  markets,
   previousPrices,
   cooldownTokens,
   log,
 }: {
-  publicClient: PublicClient
+  markets: Token[]
   previousPrices: Map<string, number>
   cooldownTokens: Map<string, number>
   log: (level: LogLevel, message: string) => void
 }) {
-  const total = await publicClient.readContract({ address: ROUTER_ADDRESS, abi: ROUTER_ABI, functionName: 'totalTokens' })
-  log('SCAN', `Scanning ${total.toString()} tokens...`)
-
-  const addresses = await Promise.all(
-    Array.from({ length: Number(total) }, (_, index) => publicClient.readContract({
-      address: ROUTER_ADDRESS,
-      abi: ROUTER_ABI,
-      functionName: 'getTokenByIndex',
-      args: [BigInt(index)],
-    })),
-  )
-  const states = await Promise.all(addresses.map((address) => publicClient.readContract({
-    address: ROUTER_ADDRESS,
-    abi: ROUTER_ABI,
-    functionName: 'getBondingCurveState',
-    args: [address],
-  })))
+  // Market snapshots are maintained by the global WebSocket runtime. Reusing
+  // them prevents every bot cycle from duplicating a large burst of RPC calls.
+  const candidates = markets.slice(0, 32)
+  log('SCAN', `Reviewing ${candidates.length} synced Flipt pools...`)
 
   let best: ScannedToken | null = null
-  for (let index = 0; index < addresses.length; index += 1) {
-    const address = addresses[index]
-    const [reserve, supply, graduated] = states[index]
-    if (graduated || reserve < parseUnits('1000', 6) || supply === 0n) continue
-
-    const cooldown = cooldownTokens.get(address.toLowerCase()) ?? 0
+  for (const market of candidates) {
+    if (!market.graduated || market.reserve < 1_000 || market.poolTokenReserve <= 0) continue
+    const key = market.address.toLowerCase()
+    const cooldown = cooldownTokens.get(key) ?? 0
     if (cooldown > 0) {
-      cooldownTokens.set(address.toLowerCase(), cooldown - 1)
+      cooldownTokens.set(key, cooldown - 1)
       continue
     }
 
-    const reserveUsdc = Number(formatUnits(reserve, 6))
-    const supplyTokens = Number(formatUnits(supply, 18))
-    const price = reserveUsdc / supplyTokens
-    const previousPrice = previousPrices.get(address.toLowerCase()) ?? price
-    const priceChange = previousPrice > 0 ? (price - previousPrice) / previousPrice : 0
-    const normalizedReserve = Math.min(reserveUsdc / 100_000, 1)
+    const previousPrice = previousPrices.get(key) ?? market.price
+    const priceChange = previousPrice > 0 ? (market.price - previousPrice) / previousPrice : 0
+    const normalizedReserve = Math.min(market.reserve / 100_000, 1)
     const score = priceChange * 0.6 + normalizedReserve * 0.4
-    previousPrices.set(address.toLowerCase(), price)
-
-    if (!best || score > best.score) best = { address, reserve, supply, graduated, price, score }
+    previousPrices.set(key, market.price)
+    if (!best || score > best.score) {
+      best = { address: market.address, pair: market.pair, reserve: market.reserve, price: market.price, score, market }
+    }
   }
 
-  if (best) log('SCAN', `Best token: ${best.address.slice(0, 8)}…${best.address.slice(-4)} | score: ${best.score.toFixed(4)}`)
-  return { best, scanned: addresses.length }
+  if (best) log('SCAN', `Selected ${best.market.symbol} · score ${best.score.toFixed(4)} · ${best.reserve.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC liquidity`)
+  return { best, scanned: candidates.length, markets: candidates }
 }

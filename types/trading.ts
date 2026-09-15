@@ -11,6 +11,8 @@ export interface Token {
   volume: number
   reserve: number
   supply: number
+  poolTokenReserve: number
+  pair: `0x${string}`
   graduated: boolean
   discoveredAt: number
 }

@@ -4,7 +4,7 @@ import { BotStatusWidget } from './BotStatusWidget'
 
 export function LeftRail() {
   return (
-    <aside className="panel flex min-h-[calc(100vh-88px)] w-full flex-col border-l-0 border-t-0 lg:w-64 lg:shrink-0">
+    <aside className="panel flex w-full flex-col border-l-0 border-t-0 xl:min-h-[calc(100vh-88px)] xl:w-64 xl:shrink-0">
       <Watchlist />
       <MyPositions />
       <BotStatusWidget />

@@ -8,19 +8,12 @@ import type { LeaderboardRow } from '@/types/trading'
 
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')
 
-const fallbackRows: LeaderboardRow[] = Array.from({ length: 50 }, (_, index) => ({
-  wallet: `0x${(BigInt('0x893ec294a87f5d21') + BigInt(index) * 8731n).toString(16).padStart(40, '0').slice(-40)}` as Address,
-  volume: Math.max(842_593 - index * 14_721 + (index % 4) * 3_300, 7_200),
-  trades: Math.max(184 - index * 3, 4),
-  estimatedPnl: (index % 5 === 2 ? -1 : 1) * (34_820 - index * 511),
-}))
-
 export function useLeaderboard() {
   const publicClient = usePublicClient()
-  const [rows, setRows] = useState<LeaderboardRow[]>(fallbackRows)
+  const [rows, setRows] = useState<LeaderboardRow[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<number | null>(null)
-  const [source, setSource] = useState<'live' | 'preview'>('preview')
+  const [source, setSource] = useState<'live' | 'unavailable'>('unavailable')
 
   const refresh = useCallback(async () => {
     if (!publicClient) return
@@ -76,7 +69,8 @@ export function useLeaderboard() {
       }
       setLastUpdated(Date.now())
     } catch {
-      setSource('preview')
+      setRows([])
+      setSource('unavailable')
       setLastUpdated(Date.now())
     } finally {
       setIsLoading(false)

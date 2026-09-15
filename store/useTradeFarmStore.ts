@@ -14,77 +14,56 @@ import type {
   TradeHistoryItem,
 } from '@/types/trading'
 
-const SEED_TIME = Date.UTC(2026, 8, 15, 13, 30, 0)
+const SEED_TIME = Date.UTC(2026, 8, 15, 15, 39, 12)
 
+// Real graduated Flipt pools. The WebSocket runtime replaces these snapshots
+// with current reserves immediately after the app connects to Arc.
 export const seedTokens: Token[] = [
   {
-    address: '0x676d8f08b31c42a9ef86d8ebc9705498319d69d2',
-    symbol: 'ZAX', name: 'Zaxion', price: 0.01945, priceChange24h: 18.72,
-    volume: 384_920, reserve: 48_231, supply: 2_479_743, graduated: false, discoveredAt: SEED_TIME - 86_400_000,
+    address: '0x676de1124d715c1b7374a9a8038d1f80d70d69d2', pair: '0x2c7c1da8ac860077009ec5bea5821e372b0026d5',
+    symbol: 'ZAX', name: 'ZAX', price: 0.0227727663, priceChange24h: 0,
+    volume: 1000, reserve: 1_914_114.238509, poolTokenReserve: 84_052_776.6969681, supply: 1_000_000_000, graduated: true, discoveredAt: SEED_TIME - 3_000_000,
   },
   {
-    address: '0xa14c88e1e803f33b8f8e50d27a9b4534e8120c14',
-    symbol: 'ARCX', name: 'Arc X', price: 0.08412, priceChange24h: 7.34,
-    volume: 247_650, reserve: 91_204, supply: 1_084_245, graduated: false, discoveredAt: SEED_TIME - 76_000_000,
+    address: '0x654250f45b74ba1363a63fb61f29ce194af469d2', pair: '0xbdf29167eafa7e4cfd5b73a662ed97775f5ec593',
+    symbol: 'BGAQSB', name: 'Breezy Grape Aurora', price: 0.0000539773, priceChange24h: 0,
+    volume: 0, reserve: 8_438.001188, poolTokenReserve: 156_325_013.80579534, supply: 1_000_000_000, graduated: true, discoveredAt: SEED_TIME - 120_000,
   },
   {
-    address: '0xb2f09d5c13a4f1e33d86b8e43fd7c7129c09ad10',
-    symbol: 'PLNT', name: 'Planet Nine', price: 0.003821, priceChange24h: -4.83,
-    volume: 98_430, reserve: 21_806, supply: 5_706_883, graduated: false, discoveredAt: SEED_TIME - 64_000_000,
+    address: '0x6e4bc520d616ea9c81a111b6cde0031dd36a69d2', pair: '0x4a3f043db14594aee438babf6fd2f6fc2c9009c9',
+    symbol: 'DMOON1', name: 'dogemoon 三', price: 0.000030810044, priceChange24h: 0,
+    volume: 0, reserve: 6_375, poolTokenReserve: 206_913_043.47826087, supply: 1_000_000_000, graduated: true, discoveredAt: SEED_TIME - 180_000,
   },
   {
-    address: '0xc3962cd7f15301b3f5d072e819a469282236e52c',
-    symbol: 'BYTE', name: 'Byte Farmer', price: 0.2418, priceChange24h: 32.41,
-    volume: 612_810, reserve: 128_930, supply: 533_209, graduated: true, discoveredAt: SEED_TIME - 53_000_000,
+    address: '0x56b3ee1b6b819e7d8d9c9faf1d3d8737d22a69d2', pair: '0x673f61c86cc3d2b12ebf873f44ecaca5747cea62',
+    symbol: '$FLIPT', name: 'Flipt', price: 0.000030810044, priceChange24h: 0,
+    volume: 0, reserve: 6_375, poolTokenReserve: 206_913_043.47826087, supply: 1_000_000_000, graduated: true, discoveredAt: SEED_TIME - 210_000,
   },
   {
-    address: '0xd5cc26ab4b4c3959db782a520459f7f0b21ce890',
-    symbol: 'MOO', name: 'Moon Cow', price: 0.009273, priceChange24h: 2.18,
-    volume: 72_941, reserve: 14_802, supply: 1_596_318, graduated: false, discoveredAt: SEED_TIME - 42_000_000,
-  },
-  {
-    address: '0xe7d8312cadc8223b5372f4d00be662d77d4f6c21',
-    symbol: 'TILL', name: 'Tiller', price: 0.05213, priceChange24h: -9.06,
-    volume: 143_280, reserve: 36_662, supply: 703_280, graduated: false, discoveredAt: SEED_TIME - 31_000_000,
+    address: '0x86c03fe16b12f09fa1844979ddac7650d21f69d2', pair: '0xb3448bade37e22f45a00187814327733b2ec5e90',
+    symbol: 'ARCAT', name: 'Arcat', price: 0.000030810044, priceChange24h: 0,
+    volume: 0, reserve: 6_375, poolTokenReserve: 206_913_043.47826087, supply: 1_000_000_000, graduated: true, discoveredAt: SEED_TIME - 240_000,
   },
 ]
 
-function makePriceHistory(price: number): PricePoint[] {
-  return Array.from({ length: 72 }, (_, i) => {
-    const trend = (i - 36) * 0.0019
-    const wave = Math.sin(i * 0.44) * 0.026 + Math.cos(i * 0.19) * 0.014
-    return {
-      time: SEED_TIME - (71 - i) * 30_000,
-      price: Math.max(price * (1 + trend + wave), price * 0.72),
-    }
-  })
-}
-
-const seedTrades: RecentTrade[] = Array.from({ length: 18 }, (_, i) => ({
-  id: `seed-${i}`,
-  timestamp: SEED_TIME - i * 13_000,
-  type: i % 3 === 1 ? 'SELL' : 'BUY',
-  symbol: 'ZAX',
-  token: seedTokens[0].address,
-  amount: [12_842, 5_200, 44_010, 2_750, 18_900][i % 5],
-  price: seedTokens[0].price * (1 - i * 0.0014),
-  wallet: [
-    '0x8945ea028c127c9e003aa2d34527e4d061af52d1',
-    '0x243f0bd12b17b9efc32d640110568f4c8f7154e2',
-    '0x718b5e92eec872cc9f4ed58d4ea07a97da178320',
-  ][i % 3] as `0x${string}`,
-}))
-
-const seedPositions: Position[] = [
+const seedTrades: RecentTrade[] = [
   {
-    token: seedTokens[0].address, symbol: 'ZAX', amount: 257_072,
-    entryPrice: 0.01852, currentPrice: 0.01945, entryUSDC: 4_760.97, openedAt: SEED_TIME - 3_600_000,
+    id: '0xcac590d51c7695e5def437765ccd776fe4206d7055d14914c7584e58e32863cf',
+    timestamp: SEED_TIME,
+    type: 'BUY', symbol: 'ZAX', token: seedTokens[0].address,
+    amount: 43_495.64626926552, price: 0.0229908,
+    wallet: '0x13cedf04eb99c03a49f3e9d27b89eeb6cb1eab72',
   },
   {
-    token: seedTokens[1].address, symbol: 'ARCX', amount: 41_250,
-    entryPrice: 0.0789, currentPrice: 0.08412, entryUSDC: 3_254.63, openedAt: SEED_TIME - 8_200_000,
+    id: '0x638f00845bc88382b7b65a7d21ac366428def4ca88fc3a051bdd797010061d61',
+    timestamp: Date.UTC(2026, 8, 15, 13, 5, 30),
+    type: 'BUY', symbol: 'ZAX', token: seedTokens[0].address,
+    amount: 360_808.0583659348, price: 0.0228800,
+    wallet: '0x2845c39ed62e30f19242a39fe47f9dbcc1ce2fc3',
   },
 ]
+
+const seedPositions: Position[] = []
 
 interface TradeFarmState {
   tokens: Token[]
@@ -130,11 +109,13 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       selectedToken: seedTokens[0].address,
       positions: seedPositions,
       botStatus: 'stopped',
-      botLogs: [
-        { id: 'welcome', timestamp: SEED_TIME, level: 'INFO', message: 'Bot console ready. Connect wallet to begin.' },
-        { id: 'network', timestamp: SEED_TIME + 300, level: 'WAIT', message: 'Arc Testnet monitor initialized.' },
+      botLogs: [],
+      priceHistory: [
+        { time: Date.UTC(2026, 8, 15, 13, 5, 29), price: 0.0225544392 },
+        { time: Date.UTC(2026, 8, 15, 13, 5, 30), price: 0.0227491265 },
+        { time: Date.UTC(2026, 8, 15, 15, 39, 11), price: 0.0227491265 },
+        { time: SEED_TIME, price: seedTokens[0].price },
       ],
-      priceHistory: makePriceHistory(seedTokens[0].price),
       recentTrades: seedTrades,
       tradeHistory: [],
       botConfig: {
@@ -162,7 +143,7 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       })),
       setSelectedToken: (address) => {
         const token = get().tokens.find((item) => item.address.toLowerCase() === address.toLowerCase())
-        set({ selectedToken: address, ...(token ? { priceHistory: makePriceHistory(token.price) } : {}) })
+        set({ selectedToken: address, ...(token ? { priceHistory: [{ time: Date.now(), price: token.price }] } : {}) })
       },
       toggleWatchlist: (address) => set((state) => ({
         watchlist: state.watchlist.includes(address)
@@ -204,7 +185,7 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       setNetworkConnected: (networkConnected) => set({ networkConnected }),
     }),
     {
-      name: 'tradefarm-terminal-v1',
+      name: 'tradefarm-terminal-v2',
       storage: createJSONStorage(() => localStorage),
       skipHydration: true,
       partialize: (state) => ({

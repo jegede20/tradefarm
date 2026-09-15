@@ -43,12 +43,6 @@ export function PriceChart() {
       </div>
       <ResponsiveContainer width="100%" height="92%">
         <LineChart data={history} margin={{ top: 12, right: 8, bottom: 0, left: 4 }}>
-          <defs>
-            <filter id="lineGlow" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="3" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-          </defs>
           <XAxis
             dataKey="time"
             axisLine={false}
@@ -67,7 +61,7 @@ export function PriceChart() {
             tick={{ fill: '#6f6f7c', fontSize: 9, fontFamily: 'var(--font-geist-mono)' }}
           />
           <Tooltip content={<ChartTooltip />} cursor={{ stroke: '#393945', strokeDasharray: '3 3' }} />
-          <Line type="monotone" dataKey="price" stroke="#7c3aed" strokeWidth={2} dot={false} isAnimationActive={false} filter="url(#lineGlow)" />
+          <Line type="monotone" dataKey="price" stroke="#8b5cf6" strokeWidth={1.75} dot={false} isAnimationActive={false} />
         </LineChart>
       </ResponsiveContainer>
     </section>
