@@ -13,7 +13,7 @@ interface LeaderboardTableProps {
   refresh: () => void
   isLoading: boolean
   lastUpdated: number | null
-  source: 'live' | 'unavailable'
+  source: 'live' | 'cached' | 'unavailable'
   error: string | null
 }
 
@@ -29,8 +29,8 @@ export function LeaderboardTable({ rows, refresh, isLoading, lastUpdated, source
     <section className="panel overflow-hidden rounded-lg">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3.5">
         <div>
-          <div className="flex items-center gap-2"><h2 className="text-sm font-semibold">Top Arc traders</h2><span className={cn('rounded-full border px-2 py-0.5 font-mono text-[8px]', isLoading ? 'border-accent-primary/30 bg-accent-primary/10 text-[#c4b5fd]' : source === 'live' ? 'border-success/30 bg-success/10 text-success' : 'border-warning/30 bg-warning/10 text-warning')}>{isLoading ? 'SYNCING' : source === 'live' ? 'LIVE' : 'RPC UNAVAILABLE'}</span></div>
-          <p className="mt-1 font-mono text-[9px] text-text-secondary">{lastUpdated ? `UPDATED ${formatTime(lastUpdated)}` : 'FETCHING ROUTER EVENTS…'}</p>
+          <div className="flex items-center gap-2"><h2 className="text-sm font-semibold">Top Arc traders</h2><span className={cn('rounded-full border px-2 py-0.5 font-mono text-[8px]', isLoading ? 'border-accent-primary/30 bg-accent-primary/10 text-[#c4b5fd]' : source === 'live' ? 'border-success/30 bg-success/10 text-success' : 'border-warning/30 bg-warning/10 text-warning')}>{isLoading ? rows.length ? 'UPDATING' : 'SYNCING' : source === 'live' ? 'LIVE' : source === 'cached' ? 'CACHED' : 'RPC UNAVAILABLE'}</span></div>
+          <p className="mt-1 font-mono text-[9px] text-text-secondary">{lastUpdated ? `UPDATED ${formatTime(lastUpdated)}${error ? ' · REFRESH DELAYED' : ''}` : 'FETCHING ROUTER EVENTS…'}</p>
         </div>
         <button type="button" onClick={refresh} disabled={isLoading} className="button-secondary flex h-8 items-center gap-2 px-3 text-[10px] font-semibold">
           <Icon name="refresh" className={cn('h-3 w-3', isLoading && 'animate-spin')} /> {isLoading ? 'SYNCING…' : 'REFRESH'}

@@ -8,9 +8,11 @@ import { PnLDisplay } from '@/components/shared/PnLDisplay'
 
 export function PortfolioHeader() {
   const { address } = useAccount()
-  const positions = useTradeFarmStore((state) => state.positions)
+  const storedPositions = useTradeFarmStore((state) => state.positions)
+  const positions = address ? storedPositions.filter((position) => !position.wallet || position.wallet.toLowerCase() === address.toLowerCase()) : []
   const tokens = useTradeFarmStore((state) => state.tokens)
-  const botPosition = useTradeFarmStore((state) => state.botPosition)
+  const storedBotPosition = useTradeFarmStore((state) => state.botPosition)
+  const botPosition = address && storedBotPosition && (!storedBotPosition.wallet || storedBotPosition.wallet.toLowerCase() === address.toLowerCase()) ? storedBotPosition : null
   const { data: nativeBalance } = useBalance({ address, query: { enabled: Boolean(address), refetchInterval: 5_000 } })
   const { data: usdcRaw } = useReadContract({
     address: USDC_ADDRESS,

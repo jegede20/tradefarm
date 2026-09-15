@@ -16,7 +16,8 @@ const slippagePresets = [0.5, 1, 2]
 export function TradeBox() {
   const { address, isConnected } = useAccount()
   const token = useTradeFarmStore((state) => state.tokens.find((item) => item.address === state.selectedToken) ?? state.tokens[0])
-  const localPosition = useTradeFarmStore((state) => state.positions.find((position) => position.token === state.selectedToken))
+  const localPosition = useTradeFarmStore((state) => address ? state.positions.find((position) => position.token === state.selectedToken
+    && (!position.wallet || position.wallet.toLowerCase() === address.toLowerCase())) : undefined)
   const [side, setSide] = useState<'buy' | 'sell'>('buy')
   const [amount, setAmount] = useState('')
   const [slippage, setSlippage] = useState(1.5)
@@ -40,7 +41,7 @@ export function TradeBox() {
 
   const usdcBalance = usdcRaw === undefined ? 0 : Number(formatUnits(usdcRaw, 6))
   const tokenBalance = tokenRaw === undefined ? (localPosition?.amount ?? 0) : Number(formatUnits(tokenRaw, 18))
-  const { quote, isLoading: quoteLoading } = useTokenQuote(token?.address ?? '', amount, side === 'buy')
+  const { quote, isLoading: quoteLoading, error: quoteError } = useTokenQuote(token?.address ?? '', amount, side === 'buy')
 
   const quoteDisplay = useMemo(() => {
     if (!quote) return null
@@ -55,15 +56,20 @@ export function TradeBox() {
     return side === 'buy' ? (numeric / token.reserve) * 100 : (numeric / token.supply) * 100
   }, [amount, side, token])
 
-  useEffect(() => { setAmount(''); reset() }, [reset, side, token?.address])
+  useEffect(() => { setAmount(''); reset() }, [address, reset, side, token?.address])
 
   if (!token) return null
   const busy = status === 'approving' || status === 'pending'
 
   const setQuickAmount = (percent: number) => {
+    if (side === 'sell' && tokenRaw !== undefined) {
+      const exactRaw = tokenRaw * BigInt(percent) / 100n
+      setAmount(exactRaw > 0n ? formatUnits(exactRaw, 18) : '')
+      return
+    }
     const balance = side === 'buy' ? usdcBalance : tokenBalance
     const value = balance * (percent / 100)
-    setAmount(value > 0 ? value.toFixed(side === 'buy' ? 2 : 6).replace(/\.?0+$/, '') : '')
+    setAmount(value > 0 ? value.toFixed(side === 'buy' ? 2 : 18).replace(/\.?0+$/, '') : '')
   }
 
   const submit = async () => {
@@ -139,6 +145,7 @@ export function TradeBox() {
       </div>
 
       {priceImpact > 5 && <p className="mt-2 rounded border border-warning/20 bg-warning/5 px-2 py-1.5 font-mono text-[9px] text-warning">High price impact. Consider reducing trade size.</p>}
+      {quoteError && <p className="mt-2 rounded border border-warning/20 bg-warning/5 px-2 py-1.5 font-mono text-[9px] leading-relaxed text-warning">Quote unavailable · {quoteError}</p>}
 
       <div className="mt-4">
         <div className="flex items-center justify-between">
@@ -162,10 +169,10 @@ export function TradeBox() {
       <button
         type="button"
         onClick={submit}
-        disabled={!isConnected || !amount || Number(amount) <= 0 || busy}
+        disabled={!isConnected || !amount || Number(amount) <= 0 || quoteLoading || !quote || quote <= 0n || busy}
         className={cn('mt-5 h-11 w-full rounded-md text-xs font-bold uppercase tracking-[0.12em] text-white transition disabled:cursor-not-allowed disabled:opacity-40', side === 'buy' ? 'bg-success hover:bg-green-400' : 'bg-danger hover:bg-red-400')}
       >
-        {busy ? status === 'approving' ? 'Approving…' : 'Confirming…' : !isConnected ? 'Connect wallet to trade' : `${side} ${token.symbol}`}
+        {busy ? status === 'approving' ? 'Approving…' : 'Confirming…' : quoteLoading ? 'Resolving pool…' : !isConnected ? 'Connect wallet to trade' : !amount ? `${side} ${token.symbol}` : !quote || quote <= 0n ? 'Valid quote required' : `${side} ${token.symbol}`}
       </button>
 
       <TxStatus status={status} hash={hash} error={error} />

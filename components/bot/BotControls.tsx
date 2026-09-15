@@ -15,7 +15,9 @@ export function BotControls() {
   const { address, isConnected } = useAccount()
   const config = useTradeFarmStore((state) => state.botConfig)
   const status = useTradeFarmStore((state) => state.botStatus)
-  const position = useTradeFarmStore((state) => state.botPosition)
+  const storedPosition = useTradeFarmStore((state) => state.botPosition)
+  const tokens = useTradeFarmStore((state) => state.tokens)
+  const position = address && storedPosition && (!storedPosition.wallet || storedPosition.wallet.toLowerCase() === address.toLowerCase()) ? storedPosition : null
   const nextActionAt = useTradeFarmStore((state) => state.botNextActionAt)
   const scanned = useTradeFarmStore((state) => state.botTokensScanned)
   const realizedPnl = useTradeFarmStore((state) => state.botRealizedPnl)
@@ -36,6 +38,9 @@ export function BotControls() {
   const [countdown, setCountdown] = useState(0)
   const [elapsed, setElapsed] = useState(0)
   const running = status === 'running'
+  const positionPrice = position
+    ? running ? position.currentPrice : tokens.find((token) => token.address.toLowerCase() === position.token.toLowerCase())?.price ?? position.currentPrice
+    : 0
   const availableUsdc = usdcRaw === undefined ? null : Number(formatUnits(usdcRaw, 6))
   const balanceTooLow = availableUsdc !== null && availableUsdc < 100
 
@@ -63,11 +68,15 @@ export function BotControls() {
       </div>
 
       <div className="space-y-5 p-5">
+        <div className="rounded-md border border-warning/25 bg-warning/5 px-3 py-2.5">
+          <div className="flex items-center justify-between gap-3"><span className="panel-title text-warning">Signing mode</span><span className="font-mono text-[8px] text-warning">WALLET-CONFIRMED</span></div>
+          <p className="mt-1.5 text-[9px] leading-relaxed text-text-secondary">The scanner and position manager run in this tab, but each approval, buy and sell still needs confirmation in the connected wallet. Same-address unattended signing cannot be activated in this build until a compatible wallet and bundler can grant and execute a scoped, expiring Arc session. TradeFarm never asks for your private key or seed phrase.</p>
+        </div>
         {position && (
           <div className={cn('rounded-md border p-4', running ? 'border-accent-primary/30 bg-accent-primary/5' : 'border-warning/30 bg-warning/5')}>
             <div className="flex items-center justify-between gap-3"><span className="panel-title">Current position</span><span className={cn('flex items-center gap-1 text-right font-mono text-[8px]', running ? 'text-success' : 'text-warning')}><span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', running ? 'animate-pulse-dot bg-success' : 'bg-warning')} /> {running ? 'MONITORING' : 'UNMANAGED · START TO RESUME'}</span></div>
             <div className="mt-3 flex items-center gap-2"><TokenBadge symbol={position.symbol} /><div><p className="text-sm font-semibold">{position.symbol}</p><p className="font-mono text-[9px] text-text-secondary">{position.amount.toLocaleString('en-US', { maximumFractionDigits: 4 })} tokens</p></div></div>
-            <div className="mt-4 grid grid-cols-3 gap-3"><Metric label="Entry" value={`$${position.entryPrice.toFixed(6)}`} /><Metric label="Current" value={`$${position.currentPrice.toFixed(6)}`} /><div><p className="data-label">Net PnL</p><PnLDisplay value={((position.currentPrice * position.amount - position.entryUSDC) / position.entryUSDC) * 100} percent className="mt-1 block text-xs" /></div></div>
+            <div className="mt-4 grid grid-cols-3 gap-3"><Metric label="Entry" value={`$${position.entryPrice.toFixed(6)}`} /><Metric label="Current" value={`$${positionPrice.toFixed(6)}`} /><div><p className="data-label">Net PnL</p><PnLDisplay value={position.entryUSDC > 0 ? ((positionPrice * position.amount - position.entryUSDC) / position.entryUSDC) * 100 : 0} percent className="mt-1 block text-xs" /></div></div>
             <div className="mt-3 grid grid-cols-3 gap-3 border-t border-border/60 pt-3"><Metric label="Peak" value={`${position.peakPnlPct.toFixed(2)}%`} /><Metric label="Held" value={formatDuration(Math.floor((Date.now() - position.openedAt) / 1_000))} /><Metric label="Stagnant" value={`${position.stagnantChecks}/${config.stagnantChecksLimit}`} /></div>
             {!running && <button type="button" onClick={startBot} disabled={!isConnected} className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-md bg-warning/15 text-[10px] font-bold uppercase tracking-wider text-warning transition hover:bg-warning/25 disabled:cursor-not-allowed disabled:opacity-40"><Icon name="power" className="h-3.5 w-3.5" /> Resume position management</button>}
           </div>

@@ -1,12 +1,18 @@
 'use client'
 
+import { useAccount } from 'wagmi'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { formatPrice } from '@/lib/formatters'
 import { PnLDisplay } from '@/components/shared/PnLDisplay'
 import { TokenBadge } from '@/components/shared/TokenBadge'
 
 export function MyPositions() {
-  const positions = useTradeFarmStore((state) => state.positions)
+  const { address } = useAccount()
+  const storedPositions = useTradeFarmStore((state) => state.positions)
+  const positions = address ? storedPositions.filter((position) => !position.wallet || position.wallet.toLowerCase() === address.toLowerCase()) : []
+  const tokens = useTradeFarmStore((state) => state.tokens)
+  const storedBotPosition = useTradeFarmStore((state) => state.botPosition)
+  const botPosition = address && storedBotPosition && (!storedBotPosition.wallet || storedBotPosition.wallet.toLowerCase() === address.toLowerCase()) ? storedBotPosition : null
   const setSelected = useTradeFarmStore((state) => state.setSelectedToken)
 
   return (
@@ -18,7 +24,9 @@ export function MyPositions() {
       {positions.length === 0 ? (
         <p className="px-3 pb-4 text-[10px] text-text-secondary">No open positions.</p>
       ) : positions.slice(0, 4).map((position) => {
-        const pnl = ((position.currentPrice - position.entryPrice) / position.entryPrice) * 100
+        const botQuote = botPosition?.token.toLowerCase() === position.token.toLowerCase() ? botPosition.currentPrice : null
+        const currentPrice = botQuote ?? tokens.find((token) => token.address.toLowerCase() === position.token.toLowerCase())?.price ?? position.currentPrice
+        const pnl = position.entryPrice > 0 ? ((currentPrice - position.entryPrice) / position.entryPrice) * 100 : 0
         return (
           <button key={position.token} type="button" onClick={() => setSelected(position.token)} className="grid w-full grid-cols-[auto_1fr_auto] items-center gap-2 px-3 py-2 text-left transition hover:bg-bg-elevated/70">
             <TokenBadge symbol={position.symbol} className="h-6 w-6 text-[8px]" />
@@ -27,7 +35,7 @@ export function MyPositions() {
               <span className="block font-mono text-[9px] text-text-secondary">entry {formatPrice(position.entryPrice)}</span>
             </span>
             <span className="text-right">
-              <span className="block font-mono text-[10px]">{formatPrice(position.currentPrice)}</span>
+              <span className="block font-mono text-[10px]">{formatPrice(currentPrice)}</span>
               <PnLDisplay value={pnl} percent className="block text-[9px]" />
             </span>
           </button>

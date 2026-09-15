@@ -25,6 +25,7 @@ export function useBotRunner() {
   const liquidityLocks = useRef(new Map<string, LiquidityLockSnapshot>())
   const cooldownTokens = useRef(new Map<string, number>())
   const rpcFailureStreak = useRef(0)
+  const sessionWallet = useRef<Address | null>(null)
   const mounted = useRef(true)
 
   const log = useCallback((level: LogLevel, message: string) => {
@@ -92,26 +93,37 @@ export function useBotRunner() {
 
       const position = useTradeFarmStore.getState().botPosition
       if (position) {
+        if (position.wallet && position.wallet.toLowerCase() !== address.toLowerCase()) {
+          log('ERROR', `This bot position belongs to ${position.wallet.slice(0, 6)}…${position.wallet.slice(-4)}. Connect that wallet to manage it.`)
+          halt('error')
+          return
+        }
         const tokenBalance = await publicClient.readContract({ address: position.token, abi: ERC20_ABI, functionName: 'balanceOf', args: [address] })
         const trackedBalance = position.amountRaw ? BigInt(position.amountRaw) : parseUnits(position.amount.toFixed(18), 18)
         const managedBalance = tokenBalance < trackedBalance ? tokenBalance : trackedBalance
-        if (managedBalance === 0n) {
-          log('WARN', 'Managed position balance is zero. Local position cleared.')
-          useTradeFarmStore.getState().setBotPosition(null)
+        if (managedBalance === 0n || managedBalance * 1_000_000n <= trackedBalance) {
+          log('INFO', `Managed ${position.symbol} position is closed on-chain${managedBalance > 0n ? '; residual dust ignored' : ''}. Local bot state cleared.`)
+          useTradeFarmStore.getState().reconcileTokenBalance(position.token, managedBalance.toString(), address, position.pair)
           nextDelay = 1_500
           return
         }
-        if (managedBalance < trackedBalance) log('WARN', 'Managed token balance decreased outside TradeFarm. The remaining tracked amount will be protected.')
+
+        let managedPosition = position
+        if (managedBalance < trackedBalance) {
+          const ratio = Number(managedBalance * 1_000_000_000n / trackedBalance) / 1_000_000_000
+          managedPosition = { ...position, amount: Number(formatUnits(managedBalance, 18)), amountRaw: managedBalance.toString(), entryUSDC: position.entryUSDC * ratio, wallet: address }
+          log('WARN', 'Managed token balance decreased outside TradeFarm. Cost basis was reduced to protect only the remaining balance.')
+        }
 
         const knownMarket = useTradeFarmStore.getState().tokens.find((item) => item.address.toLowerCase() === position.token.toLowerCase())
-        const market = await getMarketSnapshot(publicClient, position.token, knownMarket?.pair, knownMarket)
+        const market = await getMarketSnapshot(publicClient, position.token, knownMarket?.pair ?? position.pair, knownMarket)
         useTradeFarmStore.getState().upsertToken(market)
         const currentOut = await getPairQuote(publicClient, position.token, market.pair, managedBalance, false)
         const currentUSDC = Number(formatUnits(currentOut, 6))
         const amount = Number(formatUnits(managedBalance, 18))
         const currentPrice = amount > 0 ? currentUSDC / amount : 0
-        const positionProfit = currentUSDC - position.entryUSDC
-        const pnl = (positionProfit / position.entryUSDC) * 100
+        const positionProfit = currentUSDC - managedPosition.entryUSDC
+        const pnl = (positionProfit / managedPosition.entryUSDC) * 100
         const projectedSessionPnl = state.botRealizedPnl + positionProfit
         const movementPct = position.lastCheckPrice > 0 ? Math.abs((currentPrice - position.lastCheckPrice) / position.lastCheckPrice) * 100 : 0
         const stagnantChecks = movementPct < config.stagnationThresholdPct ? position.stagnantChecks + 1 : 0
@@ -123,7 +135,15 @@ export function useBotRunner() {
         const drawdownExit = projectedSessionPnl <= -config.maxSessionLoss
 
         useTradeFarmStore.getState().setBotPosition({
-          ...position, amount, amountRaw: managedBalance.toString(), currentPrice, peakPnlPct, stagnantChecks, lastCheckPrice: currentPrice,
+          ...managedPosition,
+          pair: market.pair,
+          wallet: address,
+          amount,
+          amountRaw: managedBalance.toString(),
+          currentPrice,
+          peakPnlPct,
+          stagnantChecks,
+          lastCheckPrice: currentPrice,
         })
         log('QUOTE', `${position.symbol} · PnL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}% · peak ${peakPnlPct.toFixed(2)}% · age ${ageSeconds}s`)
 
@@ -142,16 +162,18 @@ export function useBotRunner() {
           log('SELL', exitReason)
           const allowance = await publicClient.readContract({ address: position.token, abi: ERC20_ABI, functionName: 'allowance', args: [address, ROUTER_ADDRESS] })
           if (allowance < managedBalance) log('SELL', 'Token approval required.')
+          if (useTradeFarmStore.getState().botStatus !== 'running') return
           const result = await executeSell({
             token: position.token,
             symbol: position.symbol,
             amount: formatUnits(managedBalance, 18),
             slippagePct: config.slippagePct,
             expectedOut: currentOut,
+            shouldSubmit: () => useTradeFarmStore.getState().botStatus === 'running',
           })
           const received = Number(formatUnits(result.amountOut, 6))
-          const profit = received - position.entryUSDC
-          useTradeFarmStore.getState().recordBotTrade(profit, position.entryUSDC + received)
+          const profit = received - managedPosition.entryUSDC
+          useTradeFarmStore.getState().recordBotTrade(profit, managedPosition.entryUSDC + received)
           useTradeFarmStore.getState().setBotPosition(null)
           cooldownTokens.current.set(position.token.toLowerCase(), 2)
           log('SELL', `Confirmed · ${result.hash.slice(0, 10)}…${result.hash.slice(-6)} · ${received.toLocaleString('en-US', { maximumFractionDigits: 2 })} USDC`)
@@ -241,11 +263,14 @@ export function useBotRunner() {
       log('QUOTE', `${actualTradeSize.toLocaleString()} USDC → ${Number(formatUnits(expectedOut, 18)).toLocaleString('en-US', { maximumFractionDigits: 4 })} ${symbol}`)
       const allowance = await publicClient.readContract({ address: USDC_ADDRESS, abi: ERC20_ABI, functionName: 'allowance', args: [address, ROUTER_ADDRESS] })
       if (allowance < amountIn) log('BUY', 'Flipt USDC approval required.')
-      const result = await executeBuy({ token: tokenAddress, symbol, amount: actualTradeSize.toFixed(2), slippagePct: config.slippagePct, expectedOut })
+      if (useTradeFarmStore.getState().botStatus !== 'running') return
+      const result = await executeBuy({ token: tokenAddress, symbol, amount: actualTradeSize.toFixed(2), slippagePct: config.slippagePct, expectedOut, shouldSubmit: () => useTradeFarmStore.getState().botStatus === 'running' })
       const tokenAmount = Number(formatUnits(result.amountOut, 18))
       const entryPrice = actualTradeSize / tokenAmount
       useTradeFarmStore.getState().setBotPosition({
         token: tokenAddress,
+        pair: pairAddress,
+        wallet: address,
         symbol,
         amount: tokenAmount,
         amountRaw: result.amountOut.toString(),
@@ -261,6 +286,7 @@ export function useBotRunner() {
       log('BUY', `Confirmed · block ${result.receipt.blockNumber.toString()} · ${result.transferLogs} transfers`)
       log('INFO', `Opened ${symbol} · ${tokenAmount.toLocaleString('en-US', { maximumFractionDigits: 4 })} tokens @ ${entryPrice.toFixed(8)} USDC`)
     } catch (cause) {
+      if (useTradeFarmStore.getState().botStatus !== 'running') return
       if (isTransientRpcFailure(cause)) {
         transientFailure = true
         rpcFailureStreak.current += 1
@@ -293,10 +319,13 @@ export function useBotRunner() {
     if (!isConnected || !address) { log('ERROR', 'Connect a wallet before starting.'); return }
     if (chainId !== 5042002) { log('ERROR', 'Switch the wallet to Arc Testnet.'); return }
     if (runningLoop.current) { log('WAIT', 'The previous wallet request is still settling. Start again after it completes.'); return }
-    const config = useTradeFarmStore.getState().botConfig
+    const currentState = useTradeFarmStore.getState()
+    const config = currentState.botConfig
+    if (currentState.botPosition?.wallet && currentState.botPosition.wallet.toLowerCase() !== address.toLowerCase()) { log('ERROR', 'Connect the wallet that owns the saved bot position.'); return }
     if (config.mode === 'manual' && !isAddress(config.manualToken)) { log('ERROR', 'Enter a valid manual token address.'); return }
     if (config.deadline !== null && config.deadline <= Date.now()) { log('ERROR', 'Choose a future session deadline.'); return }
     if (intervalRef.current !== null) window.clearInterval(intervalRef.current)
+    sessionWallet.current = address
     signalHistory.current.clear()
     useTradeFarmStore.getState().resetBotSession()
     useTradeFarmStore.getState().setBotStatus('running')
@@ -311,6 +340,15 @@ export function useBotRunner() {
     halt('stopped')
     log('INFO', 'Session stopped by user. Open positions were not sold automatically.')
   }, [halt, log])
+
+  useEffect(() => {
+    const activeWallet = sessionWallet.current
+    if (useTradeFarmStore.getState().botStatus !== 'running' || !activeWallet) return
+    if (!isConnected || !address || activeWallet.toLowerCase() !== address.toLowerCase()) {
+      halt('stopped')
+      log('WARN', 'Wallet disconnected or changed. Bot stopped before any further transaction could be submitted.')
+    }
+  }, [address, halt, isConnected, log])
 
   useEffect(() => {
     mounted.current = true

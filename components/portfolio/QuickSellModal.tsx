@@ -23,13 +23,15 @@ export function QuickSellModal({ position, onClose }: { position: Position; onCl
     query: { enabled: Boolean(address), refetchInterval: 3_000 },
   })
   const balanceLoading = Boolean(address && tokenRaw === undefined)
-  const availableRaw = tokenRaw ?? parseUnits(position.amount.toFixed(18), 18)
+  const trackedRaw = position.amountRaw ? BigInt(position.amountRaw) : parseUnits(position.amount.toFixed(18), 18)
+  const availableRaw = tokenRaw ?? trackedRaw
   const amountRaw = availableRaw * BigInt(percent) / 100n
   const amount = formatUnits(amountRaw, 18)
   const available = Number(formatUnits(availableRaw, 18))
-  const { quote, isLoading } = useTokenQuote(position.token, amount, false)
+  const { quote, isLoading, error: quoteError } = useTokenQuote(position.token, amount, false)
   const { executeSell, status, hash, error } = useExecuteTrade()
   const busy = status === 'pending' || status === 'approving'
+  const completed = status === 'success'
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === 'Escape' && !busy) onClose() }
@@ -53,10 +55,11 @@ export function QuickSellModal({ position, onClose }: { position: Position; onCl
           <div className="mt-2 rounded-md border border-border bg-bg-primary px-3 py-3 font-mono text-sm">{Number(amount).toLocaleString('en-US', { maximumFractionDigits: 6 })} <span className="float-right text-text-secondary">{position.symbol}</span></div>
           <input type="range" min="1" max="100" value={percent} onChange={(event) => setPercent(Number(event.target.value))} className="mt-4 w-full" />
           <div className="mt-2 grid grid-cols-4 gap-2">{[25, 50, 75, 100].map((item) => <button key={item} type="button" onClick={() => setPercent(item)} className={`button-secondary h-7 font-mono text-[9px] ${percent === item ? 'border-accent-primary text-[#c4b5fd]' : ''}`}>{item}%</button>)}</div>
-          <div className="mt-4 flex items-center justify-between rounded-md border border-border bg-bg-primary px-3 py-2.5"><span className="data-label">Expected</span><span className="font-mono text-xs">{isLoading ? 'QUOTING…' : quote ? `≈ ${Number(formatUnits(quote, 6)).toLocaleString('en-US', { maximumFractionDigits: 4 })} USDC` : '—'}</span></div>
+          <div className="mt-4 flex items-center justify-between rounded-md border border-border bg-bg-primary px-3 py-2.5"><span className="data-label">Expected</span><span className="font-mono text-xs">{isLoading ? 'RESOLVING POOL…' : quote ? `≈ ${Number(formatUnits(quote, 6)).toLocaleString('en-US', { maximumFractionDigits: 4 })} USDC` : '—'}</span></div>
+          {quoteError && <p className="mt-2 rounded border border-warning/25 bg-warning/5 px-3 py-2 font-mono text-[9px] leading-relaxed text-warning">Quote unavailable · {quoteError}</p>}
           <label className="mt-4 block data-label">Slippage %</label>
           <input type="number" min="0.1" max="10" step="0.1" value={slippage} onChange={(event) => setSlippage(Number(event.target.value))} className="input-terminal mt-1.5 h-9" />
-          <button type="button" onClick={sell} disabled={busy || balanceLoading || !address || amountRaw === 0n} className="mt-5 h-11 w-full rounded-md bg-danger text-xs font-bold uppercase tracking-wider text-white transition hover:bg-red-400 disabled:opacity-50">{busy ? 'CONFIRMING…' : balanceLoading ? 'READING BALANCE…' : !address ? 'CONNECT WALLET TO SELL' : `SELL ${percent}%`}</button>
+          <button type="button" onClick={sell} disabled={busy || completed || balanceLoading || isLoading || !quote || quote <= 0n || !address || amountRaw === 0n} className="mt-5 h-11 w-full rounded-md bg-danger text-xs font-bold uppercase tracking-wider text-white transition hover:bg-red-400 disabled:opacity-50">{completed ? 'SELL CONFIRMED' : busy ? 'CONFIRMING…' : balanceLoading ? 'READING BALANCE…' : isLoading ? 'RESOLVING POOL…' : !address ? 'CONNECT WALLET TO SELL' : !quote || quote <= 0n ? 'QUOTE REQUIRED' : `SELL ${percent}%`}</button>
           <TxStatus status={status} hash={hash} error={error} />
         </div>
       </div>

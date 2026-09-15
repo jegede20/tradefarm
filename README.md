@@ -48,17 +48,19 @@ Contract safeguards:
 - Trade receipts are awaited before local state changes.
 - Pool buys are accepted into local state only when the receipt contains exactly four ERC-20 `Transfer` logs.
 - Confirmed receipt `Transfer` logs, rather than pre-trade quote estimates, populate purchased and received amounts.
-- Trade history and an open bot position are persisted in browser localStorage.
+- Positions persist their wallet, Hub pair, and exact raw token amount; trade history and bot state remain browser-local and are scoped to the originating wallet.
+- Missing persisted pair metadata is recovered from the live Hub registry before quoting or trading.
+- A global balance reconciler removes closed positions and negligible residual dust, including while the bot is stopped.
 
 ## Live market runtime
 
 `useTokenDiscovery` subscribes to raw Flipt Hub events over Arc WebSocket, resolves the transaction selector and token address, reads pool reserves, and updates the ticker, chart, and trade feed. It refreshes the selected pool every few seconds, syncs recent pools in bounded batches, and reconnects with exponential backoff.
 
-The bounded scan is intentional: the live Hub contains more than twenty thousand pairs, so sending one browser RPC request per historical pair every loop would freeze mobile wallets and overload the public endpoint. The leaderboard similarly reads bounded 512-block windows, pairs verified Hub buy/sell events with their exact USDC `Transfer` logs, and stops after at most 500 matched trades; this stays below Arc RPC's result ceiling.
+The bounded scan is intentional: the live Hub contains more than twenty thousand pairs, so sending one browser RPC request per historical pair every loop would freeze mobile wallets and overload the public endpoint. The leaderboard similarly reads bounded 256-block windows, requests each window's Hub and USDC logs concurrently, pairs verified Hub buy/sell events with their exact USDC `Transfer` logs, and stops after at most 500 matched trades. Transient RPC failures use bounded exponential retry, concurrent consumers share one in-flight request, and the last verified result remains usable from a ten-minute browser cache.
 
 ## Bot
 
-The bot is a sequential rotation engine that runs only in the active browser tab with `setInterval`; there is no server worker or custody layer. Its runtime remains mounted while navigating between TradeFarm routes. It opens at most one bot position, waits for the buy receipt, manages that position, waits for the sell receipt, and then scans again after a short rotation delay. Sold tokens remain excluded for two complete scan iterations.
+The bot is a sequential rotation engine that runs only in the active browser tab with `setInterval`; there is no server worker or custody layer. Its runtime remains mounted while navigating between TradeFarm routes. It opens at most one bot position, waits for the buy receipt, manages that position, waits for the sell receipt, and then scans again after a short rotation delay. Sold tokens remain excluded for two complete scan iterations. Stop and wallet/account changes are checked again immediately before each transaction submission.
 
 Auto mode no longer chooses from shallow pools by reserve rank alone. It first observes recent markets, then requires: a Hub-verified graduated token/pair mapping; configurable minimum USDC depth; at least two distinct traders and both buy and sell flow in a rolling ten-minute window; minimum buy pressure; bounded single-wallet flow; bounded creator holdings read from the Hub launch record; at least 5% of supply on the token side of the pool; bounded momentum/volatility; acceptable entry impact; and a configurable percentage of LP supply held by the pair itself. Survivors receive a transparent 0–100 quality score based on liquidity, sustained activity, wallet diversity, buy pressure, non-extreme momentum, token-side depth, and price impact. Selection and rejection reasons are written to the terminal log.
 
@@ -69,6 +71,12 @@ Each session can target a recent-transfer leaderboard rank or realized-USDC prof
 Position exits include take profit, stop loss, trailing stop, maximum hold time, stagnation, deadline, objective completion, and projected session drawdown. Session protections include maximum realized loss and a consecutive-loss circuit breaker. The scheduler never waits beyond the configured hold deadline even when the normal quote interval is longer. Transient Arc RPC failures now use exponential retries without abandoning an open position; submitted approval and trade hashes retry the same receipt before any failure is surfaced.
 
 Stopping the bot prevents new actions but does not submit a sell merely because the user pressed Stop. Any already submitted wallet request is allowed to settle, and the open position remains available to resume or sell manually.
+
+## Transaction authorization
+
+The current injected-wallet path is **wallet-confirmed**, not unattended: the scanner and position manager run automatically, but every approval, buy, and sell still requires the connected wallet to sign. TradeFarm never requests or stores a private key or seed phrase and never switches execution to a different ranking address.
+
+Secure same-address unattended execution must be activated only through a wallet that can grant an Arc-compatible, scoped and expiring smart-account/session permission (for example an EIP-7702/7715-compatible flow) plus supported bundler infrastructure. Ordinary injected JSON-RPC accounts generally cannot authorize an arbitrary delegate from a dApp. Until a compatible wallet/provider flow is configured and verified, the UI explicitly identifies execution as wallet-confirmed rather than claiming autonomous signing.
 
 ## Validation
 

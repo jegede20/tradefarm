@@ -19,8 +19,11 @@ export interface Token {
 
 export interface Position {
   token: `0x${string}`
+  pair?: `0x${string}`
+  wallet?: `0x${string}`
   symbol: string
   amount: number
+  amountRaw?: string
   entryPrice: number
   currentPrice: number
   entryUSDC: number
@@ -48,6 +51,7 @@ export interface TradeHistoryItem {
   timestamp: number
   type: 'BUY' | 'SELL'
   token: `0x${string}`
+  wallet?: `0x${string}`
   symbol: string
   amountIn: string
   amountOut: string
@@ -64,6 +68,8 @@ export interface BotLog {
 
 export interface BotPosition {
   token: `0x${string}`
+  pair?: `0x${string}`
+  wallet?: `0x${string}`
   symbol: string
   amount: number
   amountRaw: string

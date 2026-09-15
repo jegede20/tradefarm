@@ -2,6 +2,7 @@
 
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
+import { formatUnits, parseUnits, type Address } from 'viem'
 import type {
   BotConfig,
   BotLog,
@@ -65,6 +66,15 @@ const seedTrades: RecentTrade[] = [
 
 const seedPositions: Position[] = []
 
+function positionRaw(position: Pick<Position, 'amount' | 'amountRaw'>) {
+  if (position.amountRaw) return BigInt(position.amountRaw)
+  return parseUnits(position.amount.toFixed(18), 18)
+}
+
+function ownerMatches(owner: string | undefined, wallet: string) {
+  return !owner || owner.toLowerCase() === wallet.toLowerCase()
+}
+
 const defaultBotConfig: BotConfig = {
   tradeSize: 5_000,
   takeProfitPct: 7,
@@ -125,6 +135,10 @@ interface TradeFarmState {
   toggleWatchlist: (address: string) => void
   upsertPosition: (position: Position) => void
   reducePosition: (token: string, amount: number) => void
+  settlePositionSell: (token: string, amountRaw: string, wallet: Address) => void
+  reconcileTokenBalance: (token: string, balanceRaw: string, wallet: Address, pair?: Address) => void
+  claimLegacyWalletData: (wallet: Address) => void
+  setStoredPair: (token: string, pair: Address, wallet?: Address) => void
   addPricePoint: (point: PricePoint) => void
   addRecentTrade: (trade: RecentTrade) => void
   addTradeHistory: (trade: TradeHistoryItem) => void
@@ -189,13 +203,24 @@ export const useTradeFarmStore = create<TradeFarmState>()(
           : [...state.watchlist, address],
       })),
       upsertPosition: (position) => set((state) => {
-        const existing = state.positions.find((item) => item.token.toLowerCase() === position.token.toLowerCase())
+        const existing = state.positions.find((item) => item.token.toLowerCase() === position.token.toLowerCase()
+          && (!item.wallet || !position.wallet || item.wallet.toLowerCase() === position.wallet.toLowerCase()))
         if (!existing) return { positions: [position, ...state.positions] }
-        const amount = existing.amount + position.amount
+        const amountRaw = positionRaw(existing) + positionRaw(position)
+        const amount = Number(formatUnits(amountRaw, 18))
         const entryUSDC = existing.entryUSDC + position.entryUSDC
         return {
-          positions: state.positions.map((item) => item.token.toLowerCase() === position.token.toLowerCase()
-            ? { ...item, amount, entryUSDC, entryPrice: entryUSDC / amount, currentPrice: position.currentPrice }
+          positions: state.positions.map((item) => item === existing
+            ? {
+                ...item,
+                ...position,
+                amount,
+                amountRaw: amountRaw.toString(),
+                entryUSDC,
+                entryPrice: entryUSDC / amount,
+                wallet: position.wallet ?? item.wallet,
+                pair: position.pair ?? item.pair,
+              }
             : item),
         }
       }),
@@ -204,8 +229,57 @@ export const useTradeFarmStore = create<TradeFarmState>()(
           if (position.token.toLowerCase() !== token.toLowerCase()) return [position]
           if (amount >= position.amount * 0.999999) return []
           const remaining = position.amount - amount
-          return [{ ...position, amount: remaining, entryUSDC: remaining * position.entryPrice }]
+          return [{ ...position, amount: remaining, amountRaw: parseUnits(remaining.toFixed(18), 18).toString(), entryUSDC: remaining * position.entryPrice }]
         }),
+      })),
+      settlePositionSell: (token, soldRawText, wallet) => set((state) => {
+        const soldRaw = BigInt(soldRawText)
+        const reduce = <T extends Position | BotPosition>(position: T): T | null => {
+          const trackedRaw = positionRaw(position)
+          const remainingRaw = trackedRaw > soldRaw ? trackedRaw - soldRaw : 0n
+          const remainingAmount = Number(formatUnits(remainingRaw, 18))
+          if (remainingRaw === 0n || remainingRaw * 1_000_000n <= trackedRaw || remainingAmount * position.currentPrice < 0.01) return null
+          const ratio = Number(remainingRaw * 1_000_000_000n / trackedRaw) / 1_000_000_000
+          return { ...position, amount: remainingAmount, amountRaw: remainingRaw.toString(), entryUSDC: position.entryUSDC * ratio, wallet } as T
+        }
+        const positions = state.positions.flatMap((position) => {
+          if (position.token.toLowerCase() !== token.toLowerCase() || !ownerMatches(position.wallet, wallet)) return [position]
+          const reduced = reduce(position)
+          return reduced ? [reduced] : []
+        })
+        const botMatches = state.botPosition?.token.toLowerCase() === token.toLowerCase() && ownerMatches(state.botPosition.wallet, wallet)
+        return { positions, botPosition: botMatches ? reduce(state.botPosition!) : state.botPosition }
+      }),
+      reconcileTokenBalance: (token, balanceRawText, wallet, pair) => set((state) => {
+        const balanceRaw = BigInt(balanceRawText)
+        const reconcile = <T extends Position | BotPosition>(position: T): T | null => {
+          const trackedRaw = positionRaw(position)
+          if (balanceRaw >= trackedRaw) return { ...position, wallet, pair: pair ?? position.pair, amountRaw: trackedRaw.toString() }
+          const amount = Number(formatUnits(balanceRaw, 18))
+          if (balanceRaw === 0n || balanceRaw * 1_000_000n <= trackedRaw || amount * position.currentPrice < 0.01) return null
+          const ratio = Number(balanceRaw * 1_000_000_000n / trackedRaw) / 1_000_000_000
+          return { ...position, wallet, pair: pair ?? position.pair, amount, amountRaw: balanceRaw.toString(), entryUSDC: position.entryUSDC * ratio } as T
+        }
+        const positions = state.positions.flatMap((position) => {
+          if (position.token.toLowerCase() !== token.toLowerCase() || !ownerMatches(position.wallet, wallet)) return [position]
+          const reconciled = reconcile(position)
+          return reconciled ? [reconciled] : []
+        })
+        const botMatches = state.botPosition?.token.toLowerCase() === token.toLowerCase() && ownerMatches(state.botPosition.wallet, wallet)
+        return { positions, botPosition: botMatches ? reconcile(state.botPosition!) : state.botPosition }
+      }),
+      claimLegacyWalletData: (wallet) => set((state) => ({
+        positions: state.positions.map((position) => position.wallet ? position : { ...position, wallet }),
+        tradeHistory: state.tradeHistory.map((trade) => trade.wallet ? trade : { ...trade, wallet }),
+        botPosition: state.botPosition && !state.botPosition.wallet ? { ...state.botPosition, wallet } : state.botPosition,
+      })),
+      setStoredPair: (token, pair, wallet) => set((state) => ({
+        positions: state.positions.map((position) => position.token.toLowerCase() === token.toLowerCase() && (!wallet || ownerMatches(position.wallet, wallet))
+          ? { ...position, pair, wallet: wallet ?? position.wallet }
+          : position),
+        botPosition: state.botPosition?.token.toLowerCase() === token.toLowerCase() && (!wallet || ownerMatches(state.botPosition.wallet, wallet))
+          ? { ...state.botPosition, pair, wallet: wallet ?? state.botPosition.wallet }
+          : state.botPosition,
       })),
       addPricePoint: (point) => set((state) => ({ priceHistory: [...state.priceHistory, point].slice(-100) })),
       addRecentTrade: (trade) => set((state) => ({ recentTrades: [trade, ...state.recentTrades].slice(0, 50) })),
@@ -239,7 +313,7 @@ export const useTradeFarmStore = create<TradeFarmState>()(
     }),
     {
       name: 'tradefarm-terminal-v2',
-      version: 4,
+      version: 5,
       storage: createJSONStorage(() => localStorage),
       skipHydration: true,
       migrate: (persistedState) => {

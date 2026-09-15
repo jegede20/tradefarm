@@ -5,11 +5,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WagmiProvider } from 'wagmi'
 import { wagmiConfig } from '@/lib/wagmiConfig'
 import { useTokenDiscovery } from '@/hooks/useTokenDiscovery'
+import { usePositionReconciliation } from '@/hooks/usePositionReconciliation'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { BotRunnerProvider } from './BotRunnerProvider'
 
 function NetworkRuntime() {
   useTokenDiscovery()
+  usePositionReconciliation()
   return null
 }
 

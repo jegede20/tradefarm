@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useAccount } from 'wagmi'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { TokenBadge } from '@/components/shared/TokenBadge'
 import { PnLDisplay } from '@/components/shared/PnLDisplay'
@@ -10,10 +11,15 @@ import { QuickSellModal } from './QuickSellModal'
 import type { Position } from '@/types/trading'
 
 export function PositionsTable() {
-  const positions = useTradeFarmStore((state) => state.positions)
+  const { address } = useAccount()
+  const storedPositions = useTradeFarmStore((state) => state.positions)
+  const positions = address ? storedPositions.filter((position) => !position.wallet || position.wallet.toLowerCase() === address.toLowerCase()) : []
   const tokens = useTradeFarmStore((state) => state.tokens)
-  const botPosition = useTradeFarmStore((state) => state.botPosition)
+  const storedBotPosition = useTradeFarmStore((state) => state.botPosition)
+  const botPosition = address && storedBotPosition && (!storedBotPosition.wallet || storedBotPosition.wallet.toLowerCase() === address.toLowerCase()) ? storedBotPosition : null
   const [selected, setSelected] = useState<Position | null>(null)
+
+  useEffect(() => setSelected(null), [address])
 
   const markedPositions = positions.map((position) => {
     const botQuote = botPosition?.token.toLowerCase() === position.token.toLowerCase() ? botPosition.currentPrice : null

@@ -1,6 +1,7 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useAccount } from 'wagmi'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { Icon } from '@/components/shared/Icons'
@@ -10,7 +11,9 @@ import type { TradeHistoryItem } from '@/types/trading'
 type SortKey = keyof Pick<TradeHistoryItem, 'timestamp' | 'type' | 'symbol' | 'amountIn' | 'amountOut' | 'price'>
 
 export function TradeHistoryTable() {
-  const history = useTradeFarmStore((state) => state.tradeHistory)
+  const { address } = useAccount()
+  const storedHistory = useTradeFarmStore((state) => state.tradeHistory)
+  const history = address ? storedHistory.filter((trade) => !trade.wallet || trade.wallet.toLowerCase() === address.toLowerCase()) : []
   const [sortKey, setSortKey] = useState<SortKey>('timestamp')
   const [descending, setDescending] = useState(true)
   const [page, setPage] = useState(1)
@@ -23,6 +26,8 @@ export function TradeHistoryTable() {
   }), [descending, history, sortKey])
   const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize))
   const rows = sorted.slice((page - 1) * pageSize, page * pageSize)
+
+  useEffect(() => setPage((value) => Math.min(value, pageCount)), [pageCount])
 
   const sort = (key: SortKey) => {
     if (sortKey === key) setDescending((value) => !value)
