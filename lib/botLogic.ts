@@ -297,10 +297,11 @@ export async function scanBestToken({
     const uniqueTraders = new Set(tokenTrades.map((trade) => trade.wallet.toLowerCase())).size
     const activityBuckets = new Set(tokenTrades.map((trade) => Math.floor((trade.timestamp - cutoff) / 120_000))).size
     const requiredActivityBuckets = strategyMode === 'profit' ? 3 : 2
+    const maximumTradeAgeSeconds = strategyMode === 'profit' ? 180 : 600
     const latestTradeAt = tokenTrades.reduce((latest, trade) => Math.max(latest, trade.timestamp), 0)
     const tradeAgeSeconds = latestTradeAt > 0 ? Math.floor((Date.now() - latestTradeAt) / 1_000) : Number.POSITIVE_INFINITY
-    if (tokenTrades.length < minRecentTrades || uniqueTraders < 2 || activityBuckets < requiredActivityBuckets || tradeAgeSeconds > 180) {
-      reject(market, `${tokenTrades.length}/${minRecentTrades} trades · ${uniqueTraders}/2 wallets · ${activityBuckets}/${requiredActivityBuckets} time buckets · latest ${Number.isFinite(tradeAgeSeconds) ? `${tradeAgeSeconds}s` : 'never'}`, 'activity')
+    if (tokenTrades.length < minRecentTrades || uniqueTraders < 2 || activityBuckets < requiredActivityBuckets || tradeAgeSeconds > maximumTradeAgeSeconds) {
+      reject(market, `${tokenTrades.length}/${minRecentTrades} trades · ${uniqueTraders}/2 wallets · ${activityBuckets}/${requiredActivityBuckets} time buckets · latest ${Number.isFinite(tradeAgeSeconds) ? `${tradeAgeSeconds}s` : 'never'} (max ${maximumTradeAgeSeconds}s)`, 'activity')
       continue
     }
 
@@ -353,7 +354,10 @@ export async function scanBestToken({
       )
       continue
     }
-    const minimumRankTurnover = Math.min(requestedSize * 0.1, 2_500)
+    // A tiny safe slice of a shallow pool may be executable, but it is not a
+    // useful deadline rotation: it consumes wallet prompts while contributing
+    // too little sampled turnover. Require at least half of the adaptive size.
+    const minimumRankTurnover = Math.min(requestedSize, Math.max(2_500, requestedSize * 0.5))
     if (strategyMode === 'rank' && plan.size < minimumRankTurnover) {
       reject(market, `${plan.size.toFixed(0)} USDC executable size below ${minimumRankTurnover.toFixed(0)} rank-volume minimum`, 'impact')
       continue

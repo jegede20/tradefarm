@@ -18,12 +18,8 @@ import {
 } from '@/lib/botLogic'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { useExecuteTrade } from './useExecuteTrade'
+import { isTransientArcRpcError } from '@/lib/rpc'
 import type { LogLevel } from '@/types/trading'
-
-function isTransientRpcFailure(cause: unknown) {
-  const message = cause instanceof Error ? cause.message : String(cause)
-  return /http request failed|failed to fetch|fetch failed|network error|timeout|timed out|socket|429|rate.?limit|limit exceeded|econn|temporarily unavailable/i.test(message)
-}
 
 export function useBotRunner() {
   const { address, isConnected, chainId } = useAccount()
@@ -77,7 +73,7 @@ export function useBotRunner() {
       const state = useTradeFarmStore.getState()
       const targetRankReached = state.botLeaderboardRank !== null && state.botLeaderboardRank <= config.targetRank
       const deadlineReached = config.deadline !== null && Date.now() >= config.deadline
-      const profitTargetReached = state.botRealizedPnl >= config.sessionProfitTarget
+      const profitTargetReached = config.strategyMode === 'profit' && state.botRealizedPnl >= config.sessionProfitTarget
       const lossLimitReached = state.botRealizedPnl <= -config.maxSessionLoss
       const lossStreakReached = state.botConsecutiveLosses >= config.maxConsecutiveLosses
 
@@ -97,10 +93,13 @@ export function useBotRunner() {
         }
       }
 
-      if (!state.botPosition && config.mode === 'auto' && !state.marketActivityReady) {
+      const activitySnapshotStale = !state.marketActivityLastUpdated || Date.now() - state.marketActivityLastUpdated > 90_000
+      if (!state.botPosition && config.mode === 'auto' && (!state.marketActivityReady || activitySnapshotStale)) {
         const now = Date.now()
         if (now - activityWaitLoggedAt.current >= 30_000) {
-          log('WAIT', state.marketActivityError ?? 'Indexing recent Hub activity before the first quality scan…')
+          log('WAIT', activitySnapshotStale && state.marketActivityLastUpdated
+            ? 'Recent Hub activity snapshot is stale; rotating RPC providers before another entry scan…'
+            : state.marketActivityError ?? 'Indexing recent Hub activity before the first quality scan…')
           activityWaitLoggedAt.current = now
         }
         nextDelay = 5_000
@@ -156,8 +155,10 @@ export function useBotRunner() {
         const peakPnlPct = Math.max(position.peakPnlPct, pnl)
         const trailingHit = peakPnlPct >= config.trailingActivationPct && pnl <= peakPnlPct - config.trailingDistancePct
         const objectiveExit = targetRankReached && config.objectiveMode === 'reach'
-        const profitObjectiveExit = projectedSessionPnl >= config.sessionProfitTarget
+        const profitObjectiveExit = config.strategyMode === 'profit' && projectedSessionPnl >= config.sessionProfitTarget
         const drawdownExit = projectedSessionPnl <= -config.maxSessionLoss
+        const rankCycleSeconds = Math.max(6, Math.min(12, config.delaySeconds))
+        const rankRotationExit = config.strategyMode === 'rank' && ageSeconds >= rankCycleSeconds
 
         useTradeFarmStore.getState().setBotPosition({
           ...managedPosition,
@@ -179,6 +180,7 @@ export function useBotRunner() {
         else if (drawdownExit) exitReason = `Maximum session drawdown reached (${projectedSessionPnl.toFixed(2)} USDC)`
         else if (pnl >= config.takeProfitPct) exitReason = 'Take-profit threshold reached'
         else if (pnl <= -config.stopLossPct) exitReason = 'Stop-loss threshold reached'
+        else if (rankRotationExit) exitReason = `Rank-volume cycle complete after ${rankCycleSeconds}s · rotating for sampled turnover`
         else if (trailingHit) exitReason = `Trailing stop triggered from ${peakPnlPct.toFixed(2)}% peak`
         else if (ageSeconds >= config.maxHoldSeconds) exitReason = `Maximum hold time reached (${config.maxHoldSeconds}s)`
         else if (stagnantChecks >= config.stagnantChecksLimit) exitReason = `Price stagnant for ${stagnantChecks} checks`
@@ -210,7 +212,7 @@ export function useBotRunner() {
           let stopAsError = false
           if (deadlineReached) sessionStopReason = 'Session deadline reached'
           else if ((objectiveExit || rankReachedAfterTrade) && config.objectiveMode === 'reach') sessionStopReason = `Leaderboard target reached · rank #${afterTrade.botLeaderboardRank ?? state.botLeaderboardRank}`
-          else if (afterTrade.botRealizedPnl >= config.sessionProfitTarget) sessionStopReason = `Profit target reached · +${afterTrade.botRealizedPnl.toFixed(2)} USDC`
+          else if (config.strategyMode === 'profit' && afterTrade.botRealizedPnl >= config.sessionProfitTarget) sessionStopReason = `Profit target reached · +${afterTrade.botRealizedPnl.toFixed(2)} USDC`
           else if (drawdownExit || afterTrade.botRealizedPnl <= -config.maxSessionLoss) {
             sessionStopReason = `Session loss limit reached · ${afterTrade.botRealizedPnl.toFixed(2)} / -${config.maxSessionLoss.toFixed(2)} USDC`
             stopAsError = true
@@ -223,11 +225,15 @@ export function useBotRunner() {
             halt(stopAsError ? 'error' : 'stopped')
             return
           }
-          nextDelay = 1_500
+          // Give the verified leaderboard refresh time to observe the completed
+          // round trip before deciding whether another rank cycle is needed.
+          nextDelay = config.strategyMode === 'rank' ? 5_000 : 1_500
           return
         }
 
-        log('HOLD', `No exit signal · movement ${movementPct.toFixed(2)}% · ${stagnationArmed ? `${stagnantChecks}/${config.stagnantChecksLimit} stagnant checks` : `stagnation arms in ${Math.max(0, config.minHoldSeconds - ageSeconds)}s`}`)
+        log('HOLD', config.strategyMode === 'rank'
+          ? `Rank-volume cycle settling · ${Math.max(0, rankCycleSeconds - ageSeconds)}s to planned rotation · PnL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%`
+          : `No exit signal · movement ${movementPct.toFixed(2)}% · ${stagnationArmed ? `${stagnantChecks}/${config.stagnantChecksLimit} stagnant checks` : `stagnation arms in ${Math.max(0, config.minHoldSeconds - ageSeconds)}s`}`)
         return
       }
 
@@ -236,13 +242,28 @@ export function useBotRunner() {
       let symbol: string
       let actualTradeSize: number
       let selectedCandidate: ScannedToken | null = null
+      let requestedTradeSize = Math.min(config.tradeSize, usdc)
+      if (config.strategyMode === 'rank') {
+        const remainingLossBudget = Math.max(0, config.maxSessionLoss + state.botRealizedPnl)
+        const conservativeCycleLossRate = 0.02 + config.slippagePct / 100
+        const budgetCappedSize = remainingLossBudget / conservativeCycleLossRate
+        const gapCappedSize = state.botLeaderboardGap !== null && state.botLeaderboardGap > 0
+          ? Math.max(100, state.botLeaderboardGap / 1.97)
+          : requestedTradeSize
+        requestedTradeSize = Math.min(requestedTradeSize, budgetCappedSize, gapCappedSize)
+        if (requestedTradeSize < 100) {
+          log('ERROR', `Remaining ranking-loss budget ${remainingLossBudget.toFixed(2)} USDC cannot fund another safe cycle. Bot stopped.`)
+          halt('error')
+          return
+        }
+      }
 
       if (config.mode === 'auto') {
         const scan = await scanBestToken({
           publicClient,
           markets: useTradeFarmStore.getState().tokens,
           recentTrades: useTradeFarmStore.getState().recentTrades,
-          requestedSize: Math.min(config.tradeSize, usdc),
+          requestedSize: requestedTradeSize,
           strategyMode: config.strategyMode,
           minLiquidityUSDC: config.minLiquidityUSDC,
           minRecentTrades: config.minRecentTrades,
@@ -279,7 +300,7 @@ export function useBotRunner() {
           log('WAIT', `Manual market failed the graduated-pool liquidity gate · ${market.reserve.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC liquidity`)
           return
         }
-        const plan = buildSafeTradePlan(market, Math.min(config.tradeSize, usdc), config.maxLiquiditySharePct, config.maxPriceImpactPct)
+        const plan = buildSafeTradePlan(market, requestedTradeSize, config.maxLiquiditySharePct, config.maxPriceImpactPct)
         if (!plan) { log('WAIT', 'Manual market failed trade-size or executable entry/exit impact guardrails.'); return }
         const safety = await validateGraduatedPoolSafety(publicClient, tokenAddress, market.pair, liquidityLocks.current)
         if (!safety.protocolVerified) {
@@ -340,12 +361,25 @@ export function useBotRunner() {
         }
       }
 
+      if (config.strategyMode === 'rank') {
+        const remainingLossBudget = Math.max(0, config.maxSessionLoss + useTradeFarmStore.getState().botRealizedPnl)
+        const expectedCycleCost = Math.max(0, executionPlan.size - executionPlan.estimatedExitUSDC)
+        const worstCaseCycleCost = expectedCycleCost + executionPlan.size * config.slippagePct / 100
+        if (worstCaseCycleCost > remainingLossBudget) {
+          log('ERROR', `Worst-case quoted cycle cost ${worstCaseCycleCost.toFixed(2)} USDC exceeds the remaining ${remainingLossBudget.toFixed(2)} USDC ranking-loss budget. Bot stopped.`)
+          halt('error')
+          return
+        }
+      }
+
       actualTradeSize = executionPlan.size
       const liveMovePct = selectedCandidate ? getExecutionPriceMovePct(selectedCandidate.market.price, executionMarket.price) : 0
       log('SCAN', `Live preflight · ${symbol} · move ${liveMovePct >= 0 ? '+' : ''}${liveMovePct.toFixed(2)}% · entry ${executionPlan.priceImpactPct.toFixed(2)}% / exit ${executionPlan.exitPriceImpactPct.toFixed(2)}% · round-trip ${(executionPlan.size - executionPlan.estimatedExitUSDC).toFixed(2)} USDC`)
       if (actualTradeSize < config.tradeSize) log('INFO', `Trade size capped to ${actualTradeSize.toLocaleString()} USDC by balance/liquidity guardrails.`)
       if (config.strategyMode === 'rank') {
-        log('INFO', `Rank-volume estimate · ${(actualTradeSize + executionPlan.estimatedExitUSDC).toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC volume · ${(actualTradeSize - executionPlan.estimatedExitUSDC).toFixed(2)} USDC round-trip cost before slippage.`)
+        const liveState = useTradeFarmStore.getState()
+        const remainingLossBudget = Math.max(0, config.maxSessionLoss + liveState.botRealizedPnl)
+        log('INFO', `Rank-volume estimate · ${(actualTradeSize + executionPlan.estimatedExitUSDC).toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC turnover · ${(actualTradeSize - executionPlan.estimatedExitUSDC).toFixed(2)} USDC base cost · ${remainingLossBudget.toFixed(2)} USDC loss budget remaining${liveState.botLeaderboardGap !== null ? ` · ${liveState.botLeaderboardGap.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC target gap` : ''}.`)
       }
       const amountIn = parseUnits(actualTradeSize.toFixed(2), 6)
       const expectedOut = await getPairQuote(publicClient, tokenAddress, pairAddress, amountIn, true)
@@ -377,7 +411,7 @@ export function useBotRunner() {
       nextDelay = Math.min(config.delaySeconds * 1_000, 3_000)
     } catch (cause) {
       if (useTradeFarmStore.getState().botStatus !== 'running') return
-      if (isTransientRpcFailure(cause)) {
+      if (isTransientArcRpcError(cause)) {
         transientFailure = true
         rpcFailureStreak.current += 1
         nextDelay = Math.min(2_000 * 2 ** (rpcFailureStreak.current - 1), 30_000)
@@ -421,7 +455,14 @@ export function useBotRunner() {
     useTradeFarmStore.getState().resetBotSession()
     useTradeFarmStore.getState().setBotStatus('running')
     useTradeFarmStore.getState().setBotNextActionAt(Date.now())
-    log('INFO', `${config.mode === 'auto' ? `${config.strategyMode === 'profit' ? 'Profit-first' : 'Rank-volume'} rotation` : 'Manual'} session started · target rank #${config.targetRank} · profit target ${config.sessionProfitTarget.toLocaleString()} USDC`)
+    if (config.strategyMode === 'rank') {
+      log('INFO', `${config.mode === 'auto' ? 'Rank-volume rotation' : 'Manual rank-volume'} session started · target rank #${config.targetRank} · ranking-loss budget ${config.maxSessionLoss.toLocaleString()} USDC${currentState.botLeaderboardGap !== null ? ` · current sampled gap ${currentState.botLeaderboardGap.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC` : ''}`)
+    } else {
+      log('INFO', `${config.mode === 'auto' ? 'Profit-first rotation' : 'Manual profit-first'} session started · profit target ${config.sessionProfitTarget.toLocaleString()} USDC · target rank #${config.targetRank}`)
+      if (config.objectiveMode === 'reach' && (currentState.botLeaderboardRank === null || currentState.botLeaderboardRank > config.targetRank)) {
+        log('WARN', 'Profit-first mode may make no transactions in quiet markets. Use Rank-volume for a deadline-driven leaderboard target.')
+      }
+    }
     log('WARN', 'On-chain quality filters reduce selection risk; they cannot guarantee profit or prevent every rug.')
     intervalRef.current = window.setInterval(() => { void runLoop() }, 1_000)
     void runLoop()

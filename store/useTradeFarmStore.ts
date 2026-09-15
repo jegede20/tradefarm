@@ -146,10 +146,15 @@ interface TradeFarmState {
   botCompletedTrades: number
   botConsecutiveLosses: number
   botLeaderboardRank: number | null
+  botLeaderboardVolume: number
+  botTargetRankVolume: number | null
+  botLeaderboardGap: number | null
+  botLeaderboardSampleSize: number
   lastBotAction: number | null
   networkConnected: boolean
   marketActivityReady: boolean
   marketActivityTokenCount: number
+  marketActivityLastUpdated: number | null
   marketActivityError: string | null
   pendingSell: { token: Address; wallet: Address } | null
   setTokens: (tokens: Token[]) => void
@@ -176,7 +181,7 @@ interface TradeFarmState {
   setBotTokensScanned: (count: number) => void
   resetBotSession: () => void
   recordBotTrade: (profit: number, volume: number) => void
-  setBotLeaderboardRank: (rank: number | null) => void
+  setBotLeaderboardSnapshot: (snapshot: { rank: number | null; volume: number; targetVolume: number | null; gap: number | null; sampleSize: number }) => void
   setNetworkConnected: (connected: boolean) => void
   setMarketActivityStatus: (ready: boolean, tokenCount?: number, error?: string | null) => void
   setPendingSell: (pending: { token: Address; wallet: Address } | null) => void
@@ -209,10 +214,15 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       botCompletedTrades: 0,
       botConsecutiveLosses: 0,
       botLeaderboardRank: null,
+      botLeaderboardVolume: 0,
+      botTargetRankVolume: null,
+      botLeaderboardGap: null,
+      botLeaderboardSampleSize: 0,
       lastBotAction: null,
       networkConnected: false,
       marketActivityReady: false,
       marketActivityTokenCount: 0,
+      marketActivityLastUpdated: null,
       marketActivityError: null,
       pendingSell: null,
 
@@ -343,9 +353,20 @@ export const useTradeFarmStore = create<TradeFarmState>()(
         botCompletedTrades: state.botCompletedTrades + 1,
         botConsecutiveLosses: profit < 0 ? state.botConsecutiveLosses + 1 : 0,
       })),
-      setBotLeaderboardRank: (botLeaderboardRank) => set({ botLeaderboardRank }),
+      setBotLeaderboardSnapshot: ({ rank, volume, targetVolume, gap, sampleSize }) => set({
+        botLeaderboardRank: rank,
+        botLeaderboardVolume: volume,
+        botTargetRankVolume: targetVolume,
+        botLeaderboardGap: gap,
+        botLeaderboardSampleSize: sampleSize,
+      }),
       setNetworkConnected: (networkConnected) => set({ networkConnected }),
-      setMarketActivityStatus: (marketActivityReady, marketActivityTokenCount = 0, marketActivityError = null) => set({ marketActivityReady, marketActivityTokenCount, marketActivityError }),
+      setMarketActivityStatus: (marketActivityReady, marketActivityTokenCount = 0, marketActivityError = null) => set((state) => ({
+        marketActivityReady,
+        marketActivityTokenCount,
+        marketActivityLastUpdated: marketActivityReady ? Date.now() : state.marketActivityLastUpdated,
+        marketActivityError,
+      })),
       setPendingSell: (pendingSell) => set({ pendingSell }),
     }),
     {

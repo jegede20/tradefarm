@@ -1,9 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { createPublicClient, decodeEventLog, formatUnits, http, parseAbiItem, type Address, type Log, type PublicClient } from 'viem'
+import { createPublicClient, decodeEventLog, formatUnits, parseAbiItem, type Address, type Log, type PublicClient } from 'viem'
 import { arcTestnet } from '@/lib/chains'
 import { HUB_BUY_EVENT_TOPIC, HUB_SELL_EVENT_TOPIC, ROUTER_ADDRESS, USDC_ADDRESS } from '@/lib/contracts'
+import { createArcHttpTransport, isTransientArcRpcError } from '@/lib/rpc'
 import type { LeaderboardRow } from '@/types/trading'
 
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')
@@ -19,11 +20,7 @@ const FRESH_CACHE_MS = 30_000
 const USABLE_CACHE_MS = 10 * 60_000
 const leaderboardClient = createPublicClient({
   chain: arcTestnet,
-  transport: http('https://rpc.testnet.arc.io', {
-    retryCount: 1,
-    retryDelay: 400,
-    timeout: 15_000,
-  }),
+  transport: createArcHttpTransport(),
 })
 
 interface TradeEvent {
@@ -43,11 +40,6 @@ interface LeaderboardSnapshot {
 let memoryCache: LeaderboardSnapshot | null = null
 let activeRequest: Promise<LeaderboardSnapshot> | null = null
 
-function isTransientRpcFailure(cause: unknown) {
-  const message = cause instanceof Error ? cause.message : String(cause)
-  return /http request failed|failed to fetch|fetch failed|network error|timeout|timed out|socket|429|rate.?limit|limit exceeded|econn|temporarily unavailable/i.test(message)
-}
-
 async function withRpcRetry<T>(operation: () => Promise<T>) {
   let lastError: unknown
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -55,7 +47,7 @@ async function withRpcRetry<T>(operation: () => Promise<T>) {
       return await operation()
     } catch (cause) {
       lastError = cause
-      if (!isTransientRpcFailure(cause) || attempt === 3) throw cause
+      if (!isTransientArcRpcError(cause) || attempt === 3) throw cause
       await new Promise((resolve) => window.setTimeout(resolve, 400 * 2 ** attempt))
     }
   }

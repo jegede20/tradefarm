@@ -23,22 +23,31 @@ export function BotRunnerProvider({ children }: { children: ReactNode }) {
   const status = useTradeFarmStore((state) => state.botStatus)
   const config = useTradeFarmStore((state) => state.botConfig)
   const tradeHistoryCount = useTradeFarmStore((state) => state.tradeHistory.length)
-  const setLeaderboardRank = useTradeFarmStore((state) => state.setBotLeaderboardRank)
+  const setLeaderboardSnapshot = useTradeFarmStore((state) => state.setBotLeaderboardSnapshot)
   const setNextActionAt = useTradeFarmStore((state) => state.setBotNextActionAt)
   const leaderboard = useLeaderboard(status === 'running' || pathname === '/bot')
 
-  const observedRank = useMemo(() => {
-    if (!address || leaderboard.source !== 'live') return null
+  const observedSnapshot = useMemo(() => {
+    if (!address) return { rank: null, volume: 0, targetVolume: null, gap: null, sampleSize: 0 }
+    if (leaderboard.source !== 'live') return null
     const index = leaderboard.rows.findIndex((row) => row.wallet.toLowerCase() === address.toLowerCase())
-    return index >= 0 ? index + 1 : null
-  }, [address, leaderboard.rows, leaderboard.source])
+    const rank = index >= 0 ? index + 1 : null
+    const volume = index >= 0 ? leaderboard.rows[index].volume : 0
+    const targetVolume = leaderboard.rows[config.targetRank - 1]?.volume
+      ?? leaderboard.rows[leaderboard.rows.length - 1]?.volume
+      ?? null
+    const reached = rank !== null && rank <= config.targetRank
+    const gap = targetVolume === null ? null : reached ? 0 : Math.max(0, targetVolume - volume + 0.01)
+    return { rank, volume, targetVolume, gap, sampleSize: leaderboard.sampleSize }
+  }, [address, config.targetRank, leaderboard.rows, leaderboard.sampleSize, leaderboard.source])
 
   useEffect(() => {
-    setLeaderboardRank(observedRank)
-    if (status === 'running' && config.objectiveMode === 'reach' && observedRank !== null && observedRank <= config.targetRank) {
+    if (!observedSnapshot) return
+    setLeaderboardSnapshot(observedSnapshot)
+    if (status === 'running' && config.objectiveMode === 'reach' && observedSnapshot.rank !== null && observedSnapshot.rank <= config.targetRank) {
       setNextActionAt(Date.now())
     }
-  }, [config.objectiveMode, config.targetRank, observedRank, setLeaderboardRank, setNextActionAt, status])
+  }, [config.objectiveMode, config.targetRank, observedSnapshot, setLeaderboardSnapshot, setNextActionAt, status])
 
   useEffect(() => {
     if (status !== 'running') return

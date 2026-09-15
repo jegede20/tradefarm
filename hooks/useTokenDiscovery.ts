@@ -4,7 +4,6 @@ import { useEffect, useRef } from 'react'
 import {
   createPublicClient,
   formatUnits,
-  http,
   isAddress,
   webSocket,
   type Address,
@@ -15,6 +14,7 @@ import {
 import { arcTestnet } from '@/lib/chains'
 import { HUB_BUY_EVENT_TOPIC, HUB_SELL_EVENT_TOPIC, ROUTER_ADDRESS } from '@/lib/contracts'
 import { loadMarketSnapshots } from '@/lib/flipt'
+import { ARC_WS_RPC_URLS, createArcHttpTransport, isTransientArcRpcError } from '@/lib/rpc'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import type { RecentTrade, Token } from '@/types/trading'
 
@@ -24,14 +24,9 @@ const INCREMENTAL_ACTIVITY_WINDOWS = 2
 const ACTIVE_MARKET_LIMIT = 64
 const BLOCK_TIME_MS = 505
 
-function isTransientRpcFailure(cause: unknown) {
-  const message = cause instanceof Error ? cause.message : String(cause)
-  return /http request failed|failed to fetch|fetch failed|network error|timeout|timed out|socket|429|rate.?limit|limit exceeded|econn|temporarily unavailable/i.test(message)
-}
-
 function activityFailureMessage(cause: unknown) {
   const message = cause instanceof Error ? cause.message : String(cause)
-  if (/429|rate.?limit|limit exceeded|-32005/i.test(message)) return 'Arc RPC rate limit reached; retrying bounded backfill…'
+  if (/429|rate.?limit|request limit|limit exceeded|-32005|-32011|-32014/i.test(message)) return 'Arc RPC rate limit reached; rotating providers and retrying bounded backfill…'
   if (/timeout|timed out/i.test(message)) return 'Arc RPC backfill timed out; retrying over HTTP…'
   if (/failed to fetch|fetch failed|network error|socket|websocket|econn/i.test(message)) return 'Arc RPC connection interrupted; retrying over HTTP…'
   return 'Recent Hub activity could not be indexed; retrying…'
@@ -44,7 +39,7 @@ async function withRpcRetry<T>(operation: () => Promise<T>) {
       return await operation()
     } catch (cause) {
       lastError = cause
-      if (!isTransientRpcFailure(cause) || attempt === 3) throw cause
+      if (!isTransientArcRpcError(cause) || attempt === 3) throw cause
       await new Promise((resolve) => window.setTimeout(resolve, 350 * 2 ** attempt))
     }
   }
@@ -112,12 +107,14 @@ function rankActiveTokens(trades: RecentTrade[]) {
     buyVolume: number
     sellVolume: number
     wallets: Set<string>
+    buckets: Set<number>
+    latestTradeAt: number
   }>()
 
   for (const trade of trades) {
     if (trade.timestamp < cutoff) continue
     const key = trade.token.toLowerCase()
-    const current = activity.get(key) ?? { token: trade.token, buys: 0, sells: 0, buyVolume: 0, sellVolume: 0, wallets: new Set<string>() }
+    const current = activity.get(key) ?? { token: trade.token, buys: 0, sells: 0, buyVolume: 0, sellVolume: 0, wallets: new Set<string>(), buckets: new Set<number>(), latestTradeAt: 0 }
     const value = trade.amount * trade.price
     if (trade.type === 'BUY') {
       current.buys += 1
@@ -127,6 +124,8 @@ function rankActiveTokens(trades: RecentTrade[]) {
       current.sellVolume += value
     }
     current.wallets.add(trade.wallet.toLowerCase())
+    current.buckets.add(Math.floor((trade.timestamp - cutoff) / 120_000))
+    current.latestTradeAt = Math.max(current.latestTradeAt, trade.timestamp)
     activity.set(key, current)
   }
 
@@ -135,9 +134,11 @@ function rankActiveTokens(trades: RecentTrade[]) {
     .sort((left, right) => {
       const leftBalancedFlow = Math.min(left.buyVolume, left.sellVolume)
       const rightBalancedFlow = Math.min(right.buyVolume, right.sellVolume)
-      return right.buys + right.sells - (left.buys + left.sells)
-        || right.wallets.size - left.wallets.size
+      return right.buckets.size - left.buckets.size
         || rightBalancedFlow - leftBalancedFlow
+        || right.wallets.size - left.wallets.size
+        || right.buys + right.sells - (left.buys + left.sells)
+        || right.latestTradeAt - left.latestTradeAt
     })
     .slice(0, ACTIVE_MARKET_LIMIT)
     .map((item) => item.token)
@@ -172,6 +173,7 @@ export function useTokenDiscovery() {
   useEffect(() => {
     let stopped = false
     let attempt = 0
+    let wsProviderIndex = 0
     let cleanups: Array<() => void> = []
     let lastSelectedRefresh = 0
     let lastActivitySync = 0
@@ -187,11 +189,7 @@ export function useTokenDiscovery() {
     // backfill and Multicall3 reads complete reliably over HTTP.
     const readClient = createPublicClient({
       chain: arcTestnet,
-      transport: http('https://rpc.testnet.arc.io', {
-        retryCount: 1,
-        retryDelay: 350,
-        timeout: 15_000,
-      }),
+      transport: createArcHttpTransport(),
     })
     store.getState().setMarketActivityStatus(false, 0, null)
 
@@ -272,10 +270,10 @@ export function useTokenDiscovery() {
         if (!store.getState().marketActivityReady) {
           store.getState().setMarketActivityStatus(false, 0, activityFailureMessage(cause))
         }
-        if (full && !stopped && !store.getState().marketActivityReady && activityRetryTimer === null) {
+        if (!stopped && activityRetryTimer === null) {
           activityRetryTimer = window.setTimeout(() => {
             activityRetryTimer = null
-            void syncActivity(client, true)
+            void syncActivity(client, full || !store.getState().marketActivityReady)
           }, 5_000)
         }
       } finally {
@@ -296,9 +294,10 @@ export function useTokenDiscovery() {
       cleanups.forEach((cleanup) => cleanup())
       cleanups = []
 
+      const websocketUrl = ARC_WS_RPC_URLS[wsProviderIndex % ARC_WS_RPC_URLS.length]
       const client = createPublicClient({
         chain: arcTestnet,
-        transport: webSocket('wss://rpc.testnet.arc.io', {
+        transport: webSocket(websocketUrl, {
           reconnect: { attempts: 1, delay: 500 },
           retryCount: 1,
         }),
@@ -309,6 +308,7 @@ export function useTokenDiscovery() {
         store.getState().setNetworkConnected(false)
         const delay = Math.min(1_000 * 2 ** attempt, 30_000)
         attempt += 1
+        wsProviderIndex = (wsProviderIndex + 1) % ARC_WS_RPC_URLS.length
         reconnectTimer.current = window.setTimeout(() => {
           reconnectTimer.current = null
           lastActivitySync = 0
@@ -344,7 +344,7 @@ export function useTokenDiscovery() {
                 }).catch(() => undefined)
               }
             }
-            if (now - lastActivitySync >= 60_000) {
+            if (now - lastActivitySync >= 30_000) {
               const full = lastActivitySync === 0
               lastActivitySync = now
               void syncActivity(readClient, full)

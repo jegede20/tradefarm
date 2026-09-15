@@ -27,8 +27,13 @@ export function BotControls() {
   const consecutiveLosses = useTradeFarmStore((state) => state.botConsecutiveLosses)
   const sessionStartedAt = useTradeFarmStore((state) => state.botSessionStartedAt)
   const leaderboardRank = useTradeFarmStore((state) => state.botLeaderboardRank)
+  const leaderboardVolume = useTradeFarmStore((state) => state.botLeaderboardVolume)
+  const targetRankVolume = useTradeFarmStore((state) => state.botTargetRankVolume)
+  const leaderboardGap = useTradeFarmStore((state) => state.botLeaderboardGap)
+  const leaderboardSampleSize = useTradeFarmStore((state) => state.botLeaderboardSampleSize)
   const marketActivityReady = useTradeFarmStore((state) => state.marketActivityReady)
   const marketActivityTokenCount = useTradeFarmStore((state) => state.marketActivityTokenCount)
+  const marketActivityLastUpdated = useTradeFarmStore((state) => state.marketActivityLastUpdated)
   const marketActivityError = useTradeFarmStore((state) => state.marketActivityError)
   const setConfig = useTradeFarmStore((state) => state.setBotConfig)
   const { startBot, stopBot, leaderboardSource, leaderboardLoading } = useBotRunnerControls()
@@ -48,6 +53,29 @@ export function BotControls() {
     : 0
   const availableUsdc = usdcRaw === undefined ? null : Number(formatUnits(usdcRaw, 6))
   const balanceTooLow = availableUsdc !== null && availableUsdc < 100
+  const rankReached = leaderboardRank !== null && leaderboardRank <= config.targetRank
+  const rankOneWaySize = Math.max(100, Math.min(config.tradeSize, availableUsdc ?? config.tradeSize))
+  const estimatedCycleVolume = rankOneWaySize * 1.98
+  const estimatedRankCycles = leaderboardGap !== null && leaderboardGap > 0
+    ? Math.ceil(leaderboardGap / estimatedCycleVolume)
+    : 0
+  const estimatedRankCost = leaderboardGap !== null ? leaderboardGap / 1.98 * 0.02 : null
+  const recommendedRankBudget = estimatedRankCost === null ? null : Math.ceil(estimatedRankCost * 1.25 / 100) * 100
+  const rankBudgetInsufficient = recommendedRankBudget !== null && config.maxSessionLoss < recommendedRankBudget
+  const activateRankSprint = () => {
+    if (running) stopBot()
+    setConfig({
+      strategyMode: 'rank',
+      objectiveMode: 'reach',
+      tradeSize: 50_000,
+      delaySeconds: 10,
+      minBuyPressurePct: 50,
+      maxBuyPressurePct: 95,
+      minSellDepthMultiple: 0.25,
+      maxSessionLoss: Math.max(config.maxSessionLoss, 5_000),
+      maxConsecutiveLosses: Math.max(config.maxConsecutiveLosses, 6),
+    })
+  }
 
   useEffect(() => {
     const update = () => {
@@ -87,13 +115,42 @@ export function BotControls() {
           </div>
         )}
 
+        {!position && config.strategyMode === 'profit' && !rankReached && (
+          <div className="rounded-md border border-warning/35 bg-warning/[0.07] p-3">
+            <p className="panel-title text-warning">Leaderboard deadline mismatch</p>
+            <p className="mt-2 text-[10px] leading-relaxed text-text-secondary">Profit-first can correctly wait without trading during quiet or one-sided markets. The Rank Sprint preset requests up to 50,000 USDC per cycle, allows six expected losing rotations, and explicitly arms a 5,000 USDC hard ranking-loss budget.</p>
+            <button type="button" onClick={activateRankSprint} className="mt-3 flex h-9 w-full items-center justify-center rounded-md border border-warning/40 bg-warning/15 text-[9px] font-bold uppercase tracking-wider text-warning transition hover:bg-warning/25">
+              {running ? 'Stop & arm rank sprint · 5,000 max loss' : 'Use rank sprint · 5,000 max loss'}
+            </button>
+          </div>
+        )}
+
+        {config.strategyMode === 'rank' && !rankReached && (
+          <div className="rounded-md border border-accent-primary/30 bg-accent-primary/[0.06] p-3">
+            <div className="flex items-center justify-between gap-3"><p className="panel-title text-[#c4b5fd]">Rank sprint plan</p><span className="font-mono text-[8px] text-[#c4b5fd]">LATEST {leaderboardSampleSize || 500} TRADES</span></div>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Metric label="Sampled volume" value={`$${leaderboardVolume.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />
+              <Metric label={`Gap to #${config.targetRank}`} value={leaderboardGap === null ? 'SYNCING' : `$${leaderboardGap.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />
+              <Metric label="Est. cycles" value={leaderboardGap === null ? '—' : estimatedRankCycles.toString()} />
+              <Metric label="Est. base cost" value={estimatedRankCost === null ? '—' : `$${estimatedRankCost.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />
+            </div>
+            <p className="mt-3 text-[9px] leading-relaxed text-text-secondary">Estimates use near-maximum configured size and normal ~2% Flipt round-trip cost. Live depth caps, wallet confirmations, market movement and a moving rank threshold can require more cycles. The ranking-loss budget remains a hard stop.</p>
+            {rankBudgetInsufficient && recommendedRankBudget !== null && (
+              <div className="mt-3 rounded border border-warning/30 bg-warning/[0.06] p-2.5">
+                <p className="text-[9px] leading-relaxed text-warning">Current {config.maxSessionLoss.toLocaleString()} USDC budget is below the buffered estimate. TradeFarm will stop when that explicit budget is exhausted.</p>
+                {!running && <button type="button" onClick={() => setConfig({ maxSessionLoss: recommendedRankBudget })} className="mt-2 text-[8px] font-bold uppercase tracking-wider text-warning underline underline-offset-4">Set explicit {recommendedRankBudget.toLocaleString()} USDC sprint budget</button>}
+              </div>
+            )}
+          </div>
+        )}
+
         <fieldset disabled={running} className="space-y-5 disabled:opacity-60">
           <ConfigSection title="Strategy">
             <div className="grid grid-cols-2 rounded-md bg-bg-primary p-1">
               <ModeButton active={config.strategyMode === 'profit'} onClick={() => setConfig({ strategyMode: 'profit' })}>PROFIT-FIRST</ModeButton>
               <ModeButton active={config.strategyMode === 'rank'} onClick={() => setConfig({ strategyMode: 'rank' })}>RANK-VOLUME</ModeButton>
             </div>
-            <p className="text-[9px] leading-relaxed text-text-secondary">{config.strategyMode === 'profit' ? 'Requires sustained activity, at least 60 seconds of reserve observations and positive reserve momentum before entry.' : 'Favors larger executable turnover in deeper qualified pools. Gross volume can improve the sampled rank, but round-trip fees can produce a loss.'}</p>
+            <p className="text-[9px] leading-relaxed text-text-secondary">{config.strategyMode === 'profit' ? 'Requires sustained activity, at least 60 seconds of reserve observations and positive reserve momentum before entry.' : 'Favors larger executable turnover in deeper qualified pools, closes normal-cost cycles promptly, and continues until the sampled target or ranking-loss budget is reached.'}</p>
           </ConfigSection>
 
           <ConfigSection title="Execution">
@@ -154,7 +211,7 @@ export function BotControls() {
             <div className="grid grid-cols-2 gap-3">
               <NumberField label="Maximum impact" value={config.maxPriceImpactPct} min={1} max={10} step={0.25} suffix="%" onChange={(value) => setConfig({ maxPriceImpactPct: clamp(value, 1, 10) })} />
               <NumberField label="Liquidity share" value={config.maxLiquiditySharePct} min={0.1} max={5} step={0.1} suffix="%" onChange={(value) => setConfig({ maxLiquiditySharePct: clamp(value, 0.1, 5) })} />
-              <NumberField label="Session loss budget" value={config.maxSessionLoss} min={100} max={500000} step={100} suffix="USDC" onChange={(value) => setConfig({ maxSessionLoss: clamp(value, 100, 500000) })} />
+              <NumberField label={config.strategyMode === 'rank' ? 'Ranking loss budget' : 'Session loss budget'} value={config.maxSessionLoss} min={100} max={500000} step={100} suffix="USDC" onChange={(value) => setConfig({ maxSessionLoss: clamp(value, 100, 500000) })} />
               <NumberField label="Loss streak" value={config.maxConsecutiveLosses} min={1} max={10} step={1} suffix="TRADES" onChange={(value) => setConfig({ maxConsecutiveLosses: clamp(value, 1, 10) })} />
             </div>
           </ConfigSection>
@@ -166,7 +223,7 @@ export function BotControls() {
             </div>
             {config.mode === 'manual' ? (
               <input value={config.manualToken} onChange={(event) => setConfig({ manualToken: event.target.value })} placeholder="0x… token address" className="input-terminal h-10 text-[11px]" />
-            ) : <div className="space-y-2"><p className="text-[10px] leading-relaxed text-text-secondary">Backfills recent Hub activity, ranks active pools before entry, trades one token at a time, then rotates after a two-scan cooldown.</p><p className={`font-mono text-[9px] ${marketActivityReady ? 'text-success' : 'text-warning'}`}>{marketActivityReady ? `${marketActivityTokenCount} ACTIVE TOKENS INDEXED` : marketActivityError ?? 'INDEXING RECENT HUB ACTIVITY…'}</p></div>}
+            ) : <div className="space-y-2"><p className="text-[10px] leading-relaxed text-text-secondary">Backfills recent Hub activity, ranks active pools before entry, trades one token at a time, then rotates after a two-scan cooldown.</p><p className={`font-mono text-[9px] ${marketActivityReady ? 'text-success' : 'text-warning'}`}>{marketActivityReady ? `${marketActivityTokenCount} ACTIVE TOKENS INDEXED · SYNC ${marketActivityLastUpdated ? Math.max(0, Math.floor((Date.now() - marketActivityLastUpdated) / 1_000)) : 0}S AGO` : marketActivityError ?? 'INDEXING RECENT HUB ACTIVITY…'}</p></div>}
           </ConfigSection>
         </fieldset>
 
@@ -183,6 +240,8 @@ export function BotControls() {
         {(running || sessionStartedAt !== null) && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <MetricCard label="Sample rank" value={leaderboardLoading ? 'SYNCING' : leaderboardRank !== null ? `#${leaderboardRank}` : leaderboardSource === 'live' ? 'NOT IN 500' : 'UNAVAILABLE'} />
+            <MetricCard label={`Gap to #${config.targetRank}`} value={leaderboardGap === null ? 'SYNCING' : leaderboardGap <= 0 ? 'QUALIFIED' : `$${leaderboardGap.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />
+            <MetricCard label="Target volume" value={targetRankVolume === null ? 'SYNCING' : `$${targetRankVolume.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />
             <MetricCard label="Realized PnL" value={`${realizedPnl >= 0 ? '+' : ''}${realizedPnl.toFixed(2)}`} tone={realizedPnl >= 0 ? 'positive' : 'negative'} />
             <MetricCard label="Completed" value={completedTrades.toString()} />
             <MetricCard label="Session volume" value={sessionVolume.toLocaleString('en-US', { maximumFractionDigits: 0 })} />

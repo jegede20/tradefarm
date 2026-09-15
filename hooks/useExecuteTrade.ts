@@ -21,6 +21,7 @@ import { getAccount } from '@wagmi/core'
 import { BUY_SELECTOR, ERC20_ABI, ROUTER_ADDRESS, SELL_SELECTOR, USDC_ADDRESS } from '@/lib/contracts'
 import { friendlyContractError, getPairQuote } from '@/lib/flipt'
 import { resolveStoredMarket } from '@/lib/marketResolver'
+import { isTransientArcRpcError } from '@/lib/rpc'
 import { wagmiConfig } from '@/lib/wagmiConfig'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import type { TxState } from '@/types/trading'
@@ -59,8 +60,7 @@ async function waitForConfirmedReceipt(client: PublicClient, hash: Hash) {
       return await client.waitForTransactionReceipt({ hash, timeout: 4_000 })
     } catch (cause) {
       lastError = cause
-      const message = cause instanceof Error ? cause.message : String(cause)
-      if (!/http request failed|failed to fetch|fetch failed|network error|timeout|timed out|socket|429|rate.?limit|econn/i.test(message) || attempt === 3) throw cause
+      if (!isTransientArcRpcError(cause) || attempt === 3) throw cause
       await new Promise((resolve) => window.setTimeout(resolve, 400 * 2 ** attempt))
     }
   }
