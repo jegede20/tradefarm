@@ -22,6 +22,7 @@ export function BotRunnerProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const status = useTradeFarmStore((state) => state.botStatus)
   const config = useTradeFarmStore((state) => state.botConfig)
+  const tradeHistoryCount = useTradeFarmStore((state) => state.tradeHistory.length)
   const setLeaderboardRank = useTradeFarmStore((state) => state.setBotLeaderboardRank)
   const setNextActionAt = useTradeFarmStore((state) => state.setBotNextActionAt)
   const leaderboard = useLeaderboard(status === 'running' || pathname === '/bot')
@@ -44,6 +45,12 @@ export function BotRunnerProvider({ children }: { children: ReactNode }) {
     const timer = window.setInterval(() => { void leaderboard.refresh() }, 60_000)
     return () => window.clearInterval(timer)
   }, [leaderboard.refresh, status])
+
+  useEffect(() => {
+    if (status !== 'running' || tradeHistoryCount === 0) return
+    const timer = window.setTimeout(() => { void leaderboard.refresh() }, 1_500)
+    return () => window.clearTimeout(timer)
+  }, [leaderboard.refresh, status, tradeHistoryCount])
 
   const value = useMemo(() => ({
     startBot,

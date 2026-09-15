@@ -21,12 +21,14 @@ export function usePositionReconciliation() {
   const publicClient = usePublicClient()
   const positions = useTradeFarmStore((state) => state.positions)
   const botPosition = useTradeFarmStore((state) => state.botPosition)
+  const pendingSell = useTradeFarmStore((state) => state.pendingSell)
   const reconciling = useRef(false)
 
   const trackedKey = useMemo(() => [
     ...positions.map((position) => `${position.wallet ?? 'legacy'}:${position.token}:${position.amountRaw ?? position.amount}`),
     botPosition ? `${botPosition.wallet ?? 'legacy'}:${botPosition.token}:${botPosition.amountRaw}` : '',
-  ].join('|'), [botPosition, positions])
+    pendingSell ? `selling:${pendingSell.wallet}:${pendingSell.token}` : '',
+  ].join('|'), [botPosition, pendingSell, positions])
 
   useEffect(() => {
     if (!address || chainId !== 5042002 || !publicClient) return
@@ -38,9 +40,18 @@ export function usePositionReconciliation() {
       reconciling.current = true
       try {
         const state = useTradeFarmStore.getState()
+        const pending = state.pendingSell
+        const isPendingSettlement = (position: Position | BotPosition) => Boolean(
+          pending
+          && pending.wallet.toLowerCase() === address.toLowerCase()
+          && pending.token.toLowerCase() === position.token.toLowerCase(),
+        )
+        // A submitted TradeFarm sell owns reconciliation until its receipt is
+        // processed. This prevents the balance poller from clearing state and
+        // logging a close before executeSell has verified the receipt.
         const tracked = [
-          ...state.positions.filter((position) => belongsToWallet(position, address)),
-          ...(state.botPosition && belongsToWallet(state.botPosition, address) ? [state.botPosition] : []),
+          ...state.positions.filter((position) => belongsToWallet(position, address) && !isPendingSettlement(position)),
+          ...(state.botPosition && belongsToWallet(state.botPosition, address) && !isPendingSettlement(state.botPosition) ? [state.botPosition] : []),
         ]
         const tokens = [...new Set(tracked.map((position) => position.token.toLowerCase()))]
         await Promise.all(tokens.map(async (token) => {
@@ -53,6 +64,10 @@ export function usePositionReconciliation() {
             args: [address],
           })
           if (stopped) return
+          const pendingNow = useTradeFarmStore.getState().pendingSell
+          if (pendingNow
+            && pendingNow.wallet.toLowerCase() === address.toLowerCase()
+            && pendingNow.token.toLowerCase() === token) return
           const raw = trackedRaw(reference)
           const amount = Number(formatUnits(balance, 18))
           const isDust = balance === 0n || balance * 1_000_000n <= raw || amount * reference.currentPrice < 0.01

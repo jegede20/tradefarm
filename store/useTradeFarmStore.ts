@@ -89,6 +89,7 @@ function mergeRecentTradeRows(existing: RecentTrade[], incoming: RecentTrade[], 
 
 const defaultBotConfig: BotConfig = {
   tradeSize: 5_000,
+  strategyMode: 'profit',
   takeProfitPct: 7,
   stopLossPct: 5,
   slippagePct: 1.5,
@@ -99,8 +100,9 @@ const defaultBotConfig: BotConfig = {
   targetRank: 50,
   sessionProfitTarget: 5_000,
   maxSessionLoss: 2_500,
-  maxHoldSeconds: 240,
-  stagnantChecksLimit: 3,
+  minHoldSeconds: 180,
+  maxHoldSeconds: 360,
+  stagnantChecksLimit: 5,
   stagnationThresholdPct: 0.25,
   trailingActivationPct: 5,
   trailingDistancePct: 2,
@@ -109,6 +111,8 @@ const defaultBotConfig: BotConfig = {
   minLiquidityUSDC: 25_000,
   minRecentTrades: 3,
   minBuyPressurePct: 55,
+  maxBuyPressurePct: 88,
+  minSellDepthMultiple: 1,
   minLiquidityLockPct: 90,
   maxCreatorHoldingPct: 20,
   maxWalletFlowPct: 70,
@@ -143,6 +147,7 @@ interface TradeFarmState {
   marketActivityReady: boolean
   marketActivityTokenCount: number
   marketActivityError: string | null
+  pendingSell: { token: Address; wallet: Address } | null
   setTokens: (tokens: Token[]) => void
   upsertToken: (token: Token) => void
   updateToken: (address: string, patch: Partial<Token>) => void
@@ -170,6 +175,7 @@ interface TradeFarmState {
   setBotLeaderboardRank: (rank: number | null) => void
   setNetworkConnected: (connected: boolean) => void
   setMarketActivityStatus: (ready: boolean, tokenCount?: number, error?: string | null) => void
+  setPendingSell: (pending: { token: Address; wallet: Address } | null) => void
 }
 
 export const useTradeFarmStore = create<TradeFarmState>()(
@@ -204,6 +210,7 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       marketActivityReady: false,
       marketActivityTokenCount: 0,
       marketActivityError: null,
+      pendingSell: null,
 
       setTokens: (tokens) => set((state) => ({
         tokens,
@@ -335,17 +342,25 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       setBotLeaderboardRank: (botLeaderboardRank) => set({ botLeaderboardRank }),
       setNetworkConnected: (networkConnected) => set({ networkConnected }),
       setMarketActivityStatus: (marketActivityReady, marketActivityTokenCount = 0, marketActivityError = null) => set({ marketActivityReady, marketActivityTokenCount, marketActivityError }),
+      setPendingSell: (pendingSell) => set({ pendingSell }),
     }),
     {
       name: 'tradefarm-terminal-v2',
-      version: 5,
+      version: 6,
       storage: createJSONStorage(() => localStorage),
       skipHydration: true,
       migrate: (persistedState) => {
         const previous = persistedState as Partial<TradeFarmState>
+        const botConfig = { ...defaultBotConfig, ...previous.botConfig }
         return {
           ...previous,
-          botConfig: { ...defaultBotConfig, ...previous.botConfig },
+          botConfig: {
+            ...botConfig,
+            maxSessionLoss: Math.max(100, botConfig.maxSessionLoss),
+            minHoldSeconds: Math.min(botConfig.maxHoldSeconds, Math.max(30, botConfig.minHoldSeconds)),
+            maxBuyPressurePct: Math.max(botConfig.minBuyPressurePct + 1, botConfig.maxBuyPressurePct),
+            minSellDepthMultiple: Math.max(0.25, botConfig.minSellDepthMultiple),
+          },
         } as TradeFarmState
       },
       partialize: (state) => ({

@@ -5,12 +5,15 @@ import { useAccount, useBalance, useReadContract } from 'wagmi'
 import { ERC20_ABI, USDC_ADDRESS } from '@/lib/contracts'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { PnLDisplay } from '@/components/shared/PnLDisplay'
+import { calculateRealizedPnl } from '@/lib/portfolioMetrics'
 
 export function PortfolioHeader() {
   const { address } = useAccount()
   const storedPositions = useTradeFarmStore((state) => state.positions)
   const positions = address ? storedPositions.filter((position) => !position.wallet || position.wallet.toLowerCase() === address.toLowerCase()) : []
   const tokens = useTradeFarmStore((state) => state.tokens)
+  const storedHistory = useTradeFarmStore((state) => state.tradeHistory)
+  const history = address ? storedHistory.filter((trade) => !trade.wallet || trade.wallet.toLowerCase() === address.toLowerCase()) : []
   const storedBotPosition = useTradeFarmStore((state) => state.botPosition)
   const botPosition = address && storedBotPosition && (!storedBotPosition.wallet || storedBotPosition.wallet.toLowerCase() === address.toLowerCase()) ? storedBotPosition : null
   const { data: nativeBalance } = useBalance({ address, query: { enabled: Boolean(address), refetchInterval: 5_000 } })
@@ -29,7 +32,9 @@ export function PortfolioHeader() {
     return total + position.amount * live
   }, 0)
   const cost = positions.reduce((total, position) => total + position.entryUSDC, 0)
-  const pnl = positionValue - cost
+  const unrealizedPnl = positionValue - cost
+  const { realizedPnl } = calculateRealizedPnl(history)
+  const totalPnl = realizedPnl + unrealizedPnl
   const totalValue = usdc + positionValue
   const native = nativeBalance ? Number(formatEther(nativeBalance.value)) : 0
 
@@ -39,11 +44,11 @@ export function PortfolioHeader() {
         <div>
           <p className="panel-title">Total portfolio value</p>
           <p className="mt-2 font-mono text-3xl font-semibold tracking-tight sm:text-4xl">${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-          <div className="mt-2 flex items-center gap-2 text-xs">
-            <span className="text-text-secondary">Total PnL</span>
-            <PnLDisplay value={pnl} />
-            {cost > 0 && <PnLDisplay value={(pnl / cost) * 100} percent className="rounded bg-bg-primary px-1.5 py-0.5 text-[10px]" />}
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-text-secondary">TradeFarm PnL</span>
+            <PnLDisplay value={totalPnl} />
           </div>
+          <p className="mt-1 font-mono text-[9px] text-text-secondary">REALIZED <span className={realizedPnl >= 0 ? 'text-success' : 'text-danger'}>{realizedPnl >= 0 ? '+' : ''}{realizedPnl.toFixed(2)}</span> · UNREALIZED <span className={unrealizedPnl >= 0 ? 'text-success' : 'text-danger'}>{unrealizedPnl >= 0 ? '+' : ''}{unrealizedPnl.toFixed(2)}</span> USDC · LOCAL HISTORY</p>
         </div>
         <div className="grid grid-cols-2 gap-8 border-l border-border pl-6">
           <div>

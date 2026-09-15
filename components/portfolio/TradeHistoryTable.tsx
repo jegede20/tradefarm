@@ -56,8 +56,8 @@ export function TradeHistoryTable() {
                   <span className="font-mono text-[9px] text-text-secondary">{formatDateTime(trade.timestamp)}</span>
                 </div>
                 <div className="mt-4 grid grid-cols-3 gap-3">
-                  <MobileMetric label="Amount in" value={trade.amountIn} />
-                  <MobileMetric label="Amount out" value={trade.amountOut} />
+                  <MobileMetric label="Amount in" value={formatTradeAmount(trade.amountIn, trade.type === 'BUY')} />
+                  <MobileMetric label="Amount out" value={formatTradeAmount(trade.amountOut, trade.type === 'SELL')} />
                   <MobileMetric label="Price" value={formatPrice(trade.price)} />
                 </div>
                 <a href={`https://testnet.arcscan.app/tx/${trade.hash}`} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-1 font-mono text-[9px] text-[#a78bfa] hover:text-white">TX {truncateAddress(trade.hash, 9, 7)}<Icon name="external" className="h-3 w-3" /></a>
@@ -71,7 +71,7 @@ export function TradeHistoryTable() {
                 <td className="px-4 py-3 text-text-secondary">{formatDateTime(trade.timestamp)}</td>
                 <td className="px-4 py-3"><TradeSide type={trade.type} /></td>
                 <td className="px-4 py-3 font-sans text-xs font-semibold">{trade.symbol}</td>
-                <td className="px-4 py-3">{trade.amountIn}</td><td className="px-4 py-3">{trade.amountOut}</td><td className="px-4 py-3">{formatPrice(trade.price)}</td>
+                <td className="px-4 py-3">{formatTradeAmount(trade.amountIn, trade.type === 'BUY')}</td><td className="px-4 py-3">{formatTradeAmount(trade.amountOut, trade.type === 'SELL')}</td><td className="px-4 py-3">{formatPrice(trade.price)}</td>
                 <td className="px-4 py-3"><a href={`https://testnet.arcscan.app/tx/${trade.hash}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[#a78bfa] hover:text-white">{truncateAddress(trade.hash, 7, 5)}<Icon name="external" className="h-3 w-3" /></a></td>
               </tr>)}</tbody>
             </table>
@@ -85,5 +85,11 @@ export function TradeHistoryTable() {
 
 function TradeSide({ type }: { type: TradeHistoryItem['type'] }) {
   return <span className={`rounded border px-1.5 py-1 text-[8px] font-semibold ${type === 'BUY' ? 'border-success/30 bg-success/10 text-success' : 'border-danger/30 bg-danger/10 text-danger'}`}>{type}</span>
+}
+function formatTradeAmount(value: string, isUsdc: boolean) {
+  const amount = Number(value)
+  if (!Number.isFinite(amount)) return value
+  const maximumFractionDigits = isUsdc ? 6 : Math.abs(amount) >= 1 ? 4 : 8
+  return amount.toLocaleString('en-US', { maximumFractionDigits })
 }
 function MobileMetric({ label, value }: { label: string; value: string }) { return <div className="min-w-0"><p className="data-label">{label}</p><p className="mt-1 truncate font-mono text-[10px]">{value}</p></div> }

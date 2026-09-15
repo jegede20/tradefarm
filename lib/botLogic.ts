@@ -9,6 +9,11 @@ export interface TradePlan {
   estimatedExitUSDC: number
 }
 
+export interface MarketSignalPoint {
+  price: number
+  timestamp: number
+}
+
 export interface LiquidityLockSnapshot {
   pct: number
   creatorHoldingPct: number
@@ -27,6 +32,8 @@ export interface ScannedToken {
   buyPressurePct: number
   recentTradeCount: number
   uniqueTraders: number
+  activityBuckets: number
+  sellDepthMultiple: number
   largestWalletFlowPct: number
   poolTokenSharePct: number
   liquidityLockPct: number
@@ -114,9 +121,12 @@ export async function scanBestToken({
   markets,
   recentTrades,
   requestedSize,
+  strategyMode,
   minLiquidityUSDC,
   minRecentTrades,
   minBuyPressurePct,
+  maxBuyPressurePct,
+  minSellDepthMultiple,
   minLiquidityLockPct,
   maxCreatorHoldingPct,
   maxWalletFlowPct,
@@ -133,9 +143,12 @@ export async function scanBestToken({
   markets: Token[]
   recentTrades: RecentTrade[]
   requestedSize: number
+  strategyMode: 'profit' | 'rank'
   minLiquidityUSDC: number
   minRecentTrades: number
   minBuyPressurePct: number
+  maxBuyPressurePct: number
+  minSellDepthMultiple: number
   minLiquidityLockPct: number
   maxCreatorHoldingPct: number
   maxWalletFlowPct: number
@@ -143,7 +156,7 @@ export async function scanBestToken({
   maxVolatilityPct: number
   maxLiquiditySharePct: number
   maxPriceImpactPct: number
-  signalHistory: Map<string, number[]>
+  signalHistory: Map<string, MarketSignalPoint[]>
   liquidityLocks: Map<string, LiquidityLockSnapshot>
   cooldownTokens: Map<string, number>
   log: (level: LogLevel, message: string) => void
@@ -168,7 +181,7 @@ export async function scanBestToken({
     rejected[category] += 1
     rejectionDetails.push(`${market.symbol}: ${reason}`)
   }
-  log('SCAN', `Quality scan · ${marketsToReview.length}/${markets.length} pool snapshots · ${recentActivity.size} active tokens indexed`)
+  log('SCAN', `${strategyMode === 'profit' ? 'Profit-first' : 'Rank-volume'} scan · ${marketsToReview.length}/${markets.length} pool snapshots · ${recentActivity.size} active tokens indexed`)
 
   for (const market of marketsToReview) {
     if (!market.graduated || market.poolTokenReserve <= 0 || market.supply <= 0) {
@@ -179,8 +192,12 @@ export async function scanBestToken({
     const tokenTrades = recentTrades.filter((trade) => trade.timestamp >= cutoff && trade.token.toLowerCase() === key)
     const priorHistory = signalHistory.get(key) ?? []
     // Hub events carry impact-sensitive average execution prices. Momentum must
-    // be built only from reserve snapshots so trade size cannot fake a move.
-    const history = [...priorHistory, market.price].slice(-6)
+    // be built only from timestamped reserve snapshots so trade size cannot
+    // fake a move and profit mode cannot enter after a two-sample instant warmup.
+    const sampledAt = Date.now()
+    const history = [...priorHistory, { price: market.price, timestamp: sampledAt }]
+      .filter((point) => sampledAt - point.timestamp <= 5 * 60_000)
+      .slice(-12)
     signalHistory.set(key, history)
 
     const cooldown = cooldownTokens.get(key) ?? 0
@@ -195,14 +212,21 @@ export async function scanBestToken({
     }
 
     const poolTokenSharePct = market.poolTokenReserve / market.supply * 100
-    if (history.length < 2) {
-      reject(market, 'warming up signal history (1/2)', 'warmup')
+    const requiredSignalPoints = strategyMode === 'profit' ? 4 : 2
+    const requiredObservationMs = strategyMode === 'profit' ? 60_000 : 10_000
+    const observationMs = history.length > 1 ? history[history.length - 1].timestamp - history[0].timestamp : 0
+    if (history.length < requiredSignalPoints || observationMs < requiredObservationMs) {
+      reject(market, `reserve warmup ${history.length}/${requiredSignalPoints} samples · ${Math.floor(observationMs / 1_000)}/${requiredObservationMs / 1_000}s`, 'warmup')
       continue
     }
 
     const uniqueTraders = new Set(tokenTrades.map((trade) => trade.wallet.toLowerCase())).size
-    if (tokenTrades.length < minRecentTrades || uniqueTraders < 2) {
-      reject(market, `${tokenTrades.length}/${minRecentTrades} recent trades · ${uniqueTraders}/2 wallets`, 'activity')
+    const activityBuckets = new Set(tokenTrades.map((trade) => Math.floor((trade.timestamp - cutoff) / 120_000))).size
+    const requiredActivityBuckets = strategyMode === 'profit' ? 3 : 2
+    const latestTradeAt = tokenTrades.reduce((latest, trade) => Math.max(latest, trade.timestamp), 0)
+    const tradeAgeSeconds = latestTradeAt > 0 ? Math.floor((Date.now() - latestTradeAt) / 1_000) : Number.POSITIVE_INFINITY
+    if (tokenTrades.length < minRecentTrades || uniqueTraders < 2 || activityBuckets < requiredActivityBuckets || tradeAgeSeconds > 180) {
+      reject(market, `${tokenTrades.length}/${minRecentTrades} trades · ${uniqueTraders}/2 wallets · ${activityBuckets}/${requiredActivityBuckets} time buckets · latest ${Number.isFinite(tradeAgeSeconds) ? `${tradeAgeSeconds}s` : 'never'}`, 'activity')
       continue
     }
 
@@ -214,8 +238,8 @@ export async function scanBestToken({
       continue
     }
     const buyPressurePct = buyVolume / totalVolume * 100
-    if (buyPressurePct < minBuyPressurePct) {
-      reject(market, `${buyPressurePct.toFixed(0)}% buy pressure below ${minBuyPressurePct}%`, 'pressure')
+    if (buyPressurePct < minBuyPressurePct || buyPressurePct > maxBuyPressurePct) {
+      reject(market, `${buyPressurePct.toFixed(0)}% buy pressure outside ${minBuyPressurePct}–${maxBuyPressurePct}% range`, 'pressure')
       continue
     }
     const walletFlows = new Map<string, number>()
@@ -229,13 +253,15 @@ export async function scanBestToken({
       continue
     }
 
-    const firstPrice = history[0]
+    const firstPrice = history[0].price
+    const prices = history.map((point) => point.price)
     const momentumPct = firstPrice > 0 ? (market.price - firstPrice) / firstPrice * 100 : 0
-    const minPrice = Math.min(...history)
-    const maxPrice = Math.max(...history)
+    const minPrice = Math.min(...prices)
+    const maxPrice = Math.max(...prices)
     const volatilityPct = minPrice > 0 ? (maxPrice - minPrice) / minPrice * 100 : 100
-    if (momentumPct < -1 || momentumPct > maxMomentumPct || volatilityPct > maxVolatilityPct) {
-      reject(market, `momentum ${momentumPct >= 0 ? '+' : ''}${momentumPct.toFixed(2)}% · volatility ${volatilityPct.toFixed(2)}%`, 'volatility')
+    const minimumMomentumPct = strategyMode === 'profit' ? 0.2 : -1
+    if (momentumPct < minimumMomentumPct || momentumPct > maxMomentumPct || volatilityPct > maxVolatilityPct) {
+      reject(market, `momentum ${momentumPct >= 0 ? '+' : ''}${momentumPct.toFixed(2)}% outside ${minimumMomentumPct.toFixed(1)}–${maxMomentumPct}% · volatility ${volatilityPct.toFixed(2)}%`, 'volatility')
       continue
     }
 
@@ -244,17 +270,29 @@ export async function scanBestToken({
       reject(market, 'intended entry or full-position exit exceeds configured size/impact limits', 'impact')
       continue
     }
+    const minimumRankTurnover = Math.min(requestedSize * 0.1, 2_500)
+    if (strategyMode === 'rank' && plan.size < minimumRankTurnover) {
+      reject(market, `${plan.size.toFixed(0)} USDC executable size below ${minimumRankTurnover.toFixed(0)} rank-volume minimum`, 'impact')
+      continue
+    }
+    const sellDepthMultiple = sellVolume / plan.size
+    if (sellDepthMultiple < minSellDepthMultiple) {
+      reject(market, `verified recent sells cover ${sellDepthMultiple.toFixed(2)}× intended position (minimum ${minSellDepthMultiple.toFixed(2)}×)`, 'depth')
+      continue
+    }
 
-    const liquidityScore = clamp(12 + Math.log10(Math.max(1, market.reserve / minLiquidityUSDC)) * 14, 0, 28)
-    const activityScore = clamp(tokenTrades.length * 2 + uniqueTraders * 2 + (100 - largestWalletFlowPct) / 10, 0, 22)
-    const pressureScore = clamp((buyPressurePct - 50) / 50 * 22, 0, 22)
-    const momentumScore = momentumPct >= 0
-      ? clamp(18 - Math.abs(momentumPct - 1.5) * 2.5, 3, 18)
-      : clamp(8 + momentumPct * 5, 0, 8)
+    const liquidityScore = clamp(10 + Math.log10(Math.max(1, market.reserve / minLiquidityUSDC)) * 12, 0, 25)
+    const activityScore = clamp(tokenTrades.length * 1.5 + uniqueTraders * 2 + activityBuckets * 2 + (100 - largestWalletFlowPct) / 12, 0, 22)
+    const pressureScore = clamp(16 - Math.abs(buyPressurePct - 70) * 0.6, 0, 16)
+    const momentumScore = clamp(22 - Math.abs(momentumPct - 1.5) * 3, 0, 22)
     const worstImpactPct = Math.max(plan.priceImpactPct, plan.exitPriceImpactPct)
     const depthScore = clamp(10 - worstImpactPct / maxPriceImpactPct * 10, 0, 10)
     const reserveDiversityScore = clamp(poolTokenSharePct / 10, 0, 5)
-    const score = clamp(liquidityScore + activityScore + pressureScore + momentumScore + depthScore + reserveDiversityScore, 0, 100)
+    const executableSizeScore = requestedSize > 0 ? clamp(plan.size / requestedSize * 25, 0, 25) : 0
+    const sellCoverageScore = clamp(sellDepthMultiple / Math.max(minSellDepthMultiple, 0.01) * 10, 0, 10)
+    const score = strategyMode === 'rank'
+      ? clamp(liquidityScore + clamp(activityScore, 0, 20) + clamp(pressureScore, 0, 10) + depthScore + executableSizeScore + sellCoverageScore, 0, 100)
+      : clamp(liquidityScore + activityScore + pressureScore + momentumScore + depthScore + reserveDiversityScore, 0, 100)
 
     candidates.push({
       address: market.address,
@@ -267,6 +305,8 @@ export async function scanBestToken({
       buyPressurePct,
       recentTradeCount: tokenTrades.length,
       uniqueTraders,
+      activityBuckets,
+      sellDepthMultiple,
       largestWalletFlowPct,
       poolTokenSharePct,
       market,
@@ -301,8 +341,8 @@ export async function scanBestToken({
 
   if (best) {
     log('SCAN', `Selected ${best.market.symbol} · quality ${best.score.toFixed(0)}/100 · LP lock ${best.liquidityLockPct.toFixed(1)}% · creator ${best.creatorHoldingPct.toFixed(1)}%`)
-    log('SCAN', `Signals · ${best.recentTradeCount} trades / ${best.uniqueTraders} wallets · buys ${best.buyPressurePct.toFixed(0)}% · largest flow ${best.largestWalletFlowPct.toFixed(0)}% · momentum ${best.momentumPct >= 0 ? '+' : ''}${best.momentumPct.toFixed(2)}%`)
-    log('SCAN', `Executable depth · entry ${best.plan.priceImpactPct.toFixed(2)}% · full-position exit ${best.plan.exitPriceImpactPct.toFixed(2)}% estimated impact`)
+    log('SCAN', `Signals · ${best.recentTradeCount} trades / ${best.uniqueTraders} wallets / ${best.activityBuckets} time buckets · buys ${best.buyPressurePct.toFixed(0)}% · sell coverage ${best.sellDepthMultiple.toFixed(2)}× · momentum ${best.momentumPct >= 0 ? '+' : ''}${best.momentumPct.toFixed(2)}%`)
+    log('SCAN', `Executable depth · entry ${best.plan.priceImpactPct.toFixed(2)}% · full-position exit ${best.plan.exitPriceImpactPct.toFixed(2)}% · estimated round-trip cost ${(best.plan.size - best.plan.estimatedExitUSDC).toFixed(2)} USDC`)
   } else {
     const summary = Object.entries(rejected).filter(([, count]) => count > 0).map(([reason, count]) => `${reason} ${count}`).join(' · ')
     log('WAIT', `No pool passed the quality gate${summary ? ` · ${summary}` : ''}`)

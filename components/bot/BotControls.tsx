@@ -5,6 +5,7 @@ import { formatUnits } from 'viem'
 import { useAccount, useReadContract } from 'wagmi'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { useBotRunnerControls } from '@/providers/BotRunnerProvider'
+import { useSessionCapabilities } from '@/hooks/useSessionCapabilities'
 import { TokenBadge } from '@/components/shared/TokenBadge'
 import { PnLDisplay } from '@/components/shared/PnLDisplay'
 import { Icon } from '@/components/shared/Icons'
@@ -31,6 +32,7 @@ export function BotControls() {
   const marketActivityError = useTradeFarmStore((state) => state.marketActivityError)
   const setConfig = useTradeFarmStore((state) => state.setBotConfig)
   const { startBot, stopBot, leaderboardSource, leaderboardLoading } = useBotRunnerControls()
+  const sessionCapabilities = useSessionCapabilities()
   const { data: usdcRaw } = useReadContract({
     address: USDC_ADDRESS,
     abi: ERC20_ABI,
@@ -72,8 +74,8 @@ export function BotControls() {
 
       <div className="space-y-5 p-5">
         <div className="rounded-md border border-warning/25 bg-warning/5 px-3 py-2.5">
-          <div className="flex items-center justify-between gap-3"><span className="panel-title text-warning">Signing mode</span><span className="font-mono text-[8px] text-warning">WALLET-CONFIRMED</span></div>
-          <p className="mt-1.5 text-[9px] leading-relaxed text-text-secondary">The scanner and position manager run in this tab, but each approval, buy and sell still needs confirmation in the connected wallet. Same-address unattended signing cannot be activated in this build until a compatible wallet and bundler can grant and execute a scoped, expiring Arc session. TradeFarm never asks for your private key or seed phrase.</p>
+          <div className="flex items-center justify-between gap-3"><span className="panel-title text-warning">Signing mode</span><span className="font-mono text-[8px] text-warning">{sessionCapabilities.state === 'checking' ? 'CHECKING WALLET' : sessionCapabilities.state === 'advertised' ? 'SESSION API DETECTED' : 'WALLET-CONFIRMED'}</span></div>
+          <p className="mt-1.5 text-[9px] leading-relaxed text-text-secondary">{sessionCapabilities.detail} TradeFarm never asks for or stores your private key or seed phrase.</p>
         </div>
         {position && (
           <div className={cn('rounded-md border p-4', running ? 'border-accent-primary/30 bg-accent-primary/5' : 'border-warning/30 bg-warning/5')}>
@@ -86,6 +88,14 @@ export function BotControls() {
         )}
 
         <fieldset disabled={running} className="space-y-5 disabled:opacity-60">
+          <ConfigSection title="Strategy">
+            <div className="grid grid-cols-2 rounded-md bg-bg-primary p-1">
+              <ModeButton active={config.strategyMode === 'profit'} onClick={() => setConfig({ strategyMode: 'profit' })}>PROFIT-FIRST</ModeButton>
+              <ModeButton active={config.strategyMode === 'rank'} onClick={() => setConfig({ strategyMode: 'rank' })}>RANK-VOLUME</ModeButton>
+            </div>
+            <p className="text-[9px] leading-relaxed text-text-secondary">{config.strategyMode === 'profit' ? 'Requires sustained activity, at least 60 seconds of reserve observations and positive reserve momentum before entry.' : 'Favors larger executable turnover in deeper qualified pools. Gross volume can improve the sampled rank, but round-trip fees can produce a loss.'}</p>
+          </ConfigSection>
+
           <ConfigSection title="Execution">
             <div>
               <div className="flex items-center justify-between"><label className="data-label">Requested trade size</label><span className="font-mono text-xs">{config.tradeSize.toLocaleString()} <span className="text-text-secondary">USDC</span></span></div>
@@ -102,7 +112,8 @@ export function BotControls() {
 
           <ConfigSection title="Rotation policy">
             <div className="grid grid-cols-2 gap-3">
-              <NumberField label="Maximum hold" value={config.maxHoldSeconds} min={30} max={3600} step={30} suffix="SEC" onChange={(value) => setConfig({ maxHoldSeconds: clamp(value, 30, 3600) })} />
+              <NumberField label="Minimum hold" value={config.minHoldSeconds} min={30} max={900} step={30} suffix="SEC" onChange={(value) => setConfig({ minHoldSeconds: clamp(value, 30, Math.min(900, config.maxHoldSeconds)) })} />
+              <NumberField label="Maximum hold" value={config.maxHoldSeconds} min={60} max={3600} step={30} suffix="SEC" onChange={(value) => setConfig({ maxHoldSeconds: clamp(value, Math.max(60, config.minHoldSeconds), 3600) })} />
               <NumberField label="Stagnant checks" value={config.stagnantChecksLimit} min={1} max={20} step={1} suffix="CHECKS" onChange={(value) => setConfig({ stagnantChecksLimit: clamp(value, 1, 20) })} />
               <NumberField label="Stagnation band" value={config.stagnationThresholdPct} min={0.05} max={5} step={0.05} suffix="%" onChange={(value) => setConfig({ stagnationThresholdPct: clamp(value, 0.05, 5) })} />
               <NumberField label="Trailing activates" value={config.trailingActivationPct} min={1} max={100} step={0.5} suffix="%" onChange={(value) => setConfig({ trailingActivationPct: clamp(value, 1, 100) })} />
@@ -127,7 +138,9 @@ export function BotControls() {
             <div className="grid grid-cols-2 gap-3">
               <NumberField label="Minimum liquidity" value={config.minLiquidityUSDC} min={5000} max={2000000} step={5000} suffix="USDC" onChange={(value) => setConfig({ minLiquidityUSDC: clamp(value, 5000, 2000000) })} />
               <NumberField label="Recent activity" value={config.minRecentTrades} min={2} max={20} step={1} suffix="TRADES" onChange={(value) => setConfig({ minRecentTrades: clamp(value, 2, 20) })} />
-              <NumberField label="Buy pressure" value={config.minBuyPressurePct} min={50} max={90} step={1} suffix="%" onChange={(value) => setConfig({ minBuyPressurePct: clamp(value, 50, 90) })} />
+              <NumberField label="Minimum buy pressure" value={config.minBuyPressurePct} min={50} max={85} step={1} suffix="%" onChange={(value) => setConfig({ minBuyPressurePct: clamp(value, 50, Math.min(85, config.maxBuyPressurePct - 1)) })} />
+              <NumberField label="Maximum buy pressure" value={config.maxBuyPressurePct} min={60} max={95} step={1} suffix="%" onChange={(value) => setConfig({ maxBuyPressurePct: clamp(value, Math.max(60, config.minBuyPressurePct + 1), 95) })} />
+              <NumberField label="Recent sell coverage" value={config.minSellDepthMultiple} min={0.25} max={5} step={0.25} suffix="× SIZE" onChange={(value) => setConfig({ minSellDepthMultiple: clamp(value, 0.25, 5) })} />
               <NumberField label="LP self-lock" value={config.minLiquidityLockPct} min={75} max={100} step={1} suffix="%" onChange={(value) => setConfig({ minLiquidityLockPct: clamp(value, 75, 100) })} />
               <NumberField label="Creator holdings" value={config.maxCreatorHoldingPct} min={0} max={75} step={1} suffix="% MAX" onChange={(value) => setConfig({ maxCreatorHoldingPct: clamp(value, 0, 75) })} />
               <NumberField label="Largest wallet flow" value={config.maxWalletFlowPct} min={25} max={90} step={1} suffix="% MAX" onChange={(value) => setConfig({ maxWalletFlowPct: clamp(value, 25, 90) })} />
@@ -141,7 +154,7 @@ export function BotControls() {
             <div className="grid grid-cols-2 gap-3">
               <NumberField label="Maximum impact" value={config.maxPriceImpactPct} min={1} max={10} step={0.25} suffix="%" onChange={(value) => setConfig({ maxPriceImpactPct: clamp(value, 1, 10) })} />
               <NumberField label="Liquidity share" value={config.maxLiquiditySharePct} min={0.1} max={5} step={0.1} suffix="%" onChange={(value) => setConfig({ maxLiquiditySharePct: clamp(value, 0.1, 5) })} />
-              <NumberField label="Session loss" value={config.maxSessionLoss} min={100} max={500000} step={100} suffix="USDC" onChange={(value) => setConfig({ maxSessionLoss: clamp(value, 100, 500000) })} />
+              <NumberField label="Session loss budget" value={config.maxSessionLoss} min={100} max={500000} step={100} suffix="USDC" onChange={(value) => setConfig({ maxSessionLoss: clamp(value, 100, 500000) })} />
               <NumberField label="Loss streak" value={config.maxConsecutiveLosses} min={1} max={10} step={1} suffix="TRADES" onChange={(value) => setConfig({ maxConsecutiveLosses: clamp(value, 1, 10) })} />
             </div>
           </ConfigSection>
@@ -169,7 +182,7 @@ export function BotControls() {
 
         {(running || sessionStartedAt !== null) && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <MetricCard label="Est. rank" value={leaderboardRank ? `#${leaderboardRank}` : '>50'} />
+            <MetricCard label="Sample rank" value={leaderboardLoading ? 'SYNCING' : leaderboardRank !== null ? `#${leaderboardRank}` : leaderboardSource === 'live' ? 'NOT IN 500' : 'UNAVAILABLE'} />
             <MetricCard label="Realized PnL" value={`${realizedPnl >= 0 ? '+' : ''}${realizedPnl.toFixed(2)}`} tone={realizedPnl >= 0 ? 'positive' : 'negative'} />
             <MetricCard label="Completed" value={completedTrades.toString()} />
             <MetricCard label="Session volume" value={sessionVolume.toLocaleString('en-US', { maximumFractionDigits: 0 })} />

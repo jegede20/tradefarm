@@ -1,10 +1,10 @@
 import type { LeaderboardRow } from '@/types/trading'
 
 export function LeaderboardStats({ rows, sampleSize }: { rows: LeaderboardRow[]; sampleSize: number }) {
-  const totalVolume = rows.reduce((total, row) => total + row.volume, 0)
+  const totalVolume = rows.slice(0, 50).reduce((total, row) => total + row.volume, 0)
   const stats = [
     { label: 'Top-50 volume', value: `$${totalVolume.toLocaleString('en-US', { maximumFractionDigits: 0 })}`, note: 'USDC routed' },
-    { label: 'Ranked wallets', value: rows.length.toLocaleString(), note: 'Shown below' },
+    { label: 'Sample wallets', value: rows.length.toLocaleString(), note: 'Top 50 shown below' },
     { label: 'Transfers', value: sampleSize.toLocaleString(), note: 'Matched sample' },
   ]
   return (

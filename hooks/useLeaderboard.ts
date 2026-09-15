@@ -1,8 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { decodeEventLog, formatUnits, parseAbiItem, type Address, type Log, type PublicClient } from 'viem'
-import { usePublicClient } from 'wagmi'
+import { createPublicClient, decodeEventLog, formatUnits, http, parseAbiItem, type Address, type Log, type PublicClient } from 'viem'
+import { arcTestnet } from '@/lib/chains'
 import { HUB_BUY_EVENT_TOPIC, HUB_SELL_EVENT_TOPIC, ROUTER_ADDRESS, USDC_ADDRESS } from '@/lib/contracts'
 import type { LeaderboardRow } from '@/types/trading'
 
@@ -14,9 +14,17 @@ const SELL_EVENT_TOPIC = HUB_SELL_EVENT_TOPIC
 // recent-chain coverage as the former 512 x 4 strategy.
 const BLOCK_WINDOW = 256n
 const MAX_WINDOWS = 8
-const CACHE_KEY = 'tradefarm-leaderboard-v1'
+const CACHE_KEY = 'tradefarm-leaderboard-v2'
 const FRESH_CACHE_MS = 30_000
 const USABLE_CACHE_MS = 10 * 60_000
+const leaderboardClient = createPublicClient({
+  chain: arcTestnet,
+  transport: http('https://rpc.testnet.arc.io', {
+    retryCount: 1,
+    retryDelay: 400,
+    timeout: 15_000,
+  }),
+})
 
 interface TradeEvent {
   transactionHash: `0x${string}`
@@ -128,8 +136,7 @@ async function fetchLeaderboard(publicClient: PublicClient): Promise<Leaderboard
   return {
     rows: [...walletStats.values()]
       .map((item) => ({ wallet: item.wallet, volume: item.volume, trades: item.trades, estimatedPnl: item.sells - item.buys }))
-      .sort((a, b) => b.volume - a.volume)
-      .slice(0, 50),
+      .sort((a, b) => b.volume - a.volume),
     sampleSize: matchedTransfers,
     lastUpdated: Date.now(),
   }
@@ -162,7 +169,7 @@ function requestSharedSnapshot(publicClient: PublicClient) {
 }
 
 export function useLeaderboard(enabled = true) {
-  const publicClient = usePublicClient()
+  const publicClient = leaderboardClient
   const [rows, setRows] = useState<LeaderboardRow[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<number | null>(null)

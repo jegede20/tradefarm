@@ -5,7 +5,7 @@ import { formatUnits, isAddress, parseUnits, type Address } from 'viem'
 import { useAccount, usePublicClient } from 'wagmi'
 import { ERC20_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from '@/lib/contracts'
 import { friendlyContractError, getMarketSnapshot, getPairQuote } from '@/lib/flipt'
-import { buildSafeTradePlan, scanBestToken, validateGraduatedPoolSafety, type LiquidityLockSnapshot } from '@/lib/botLogic'
+import { buildSafeTradePlan, scanBestToken, validateGraduatedPoolSafety, type LiquidityLockSnapshot, type MarketSignalPoint } from '@/lib/botLogic'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { useExecuteTrade } from './useExecuteTrade'
 import type { LogLevel } from '@/types/trading'
@@ -21,7 +21,7 @@ export function useBotRunner() {
   const { executeBuy, executeSell } = useExecuteTrade()
   const intervalRef = useRef<number | null>(null)
   const runningLoop = useRef(false)
-  const signalHistory = useRef(new Map<string, number[]>())
+  const signalHistory = useRef(new Map<string, MarketSignalPoint[]>())
   const liquidityLocks = useRef(new Map<string, LiquidityLockSnapshot>())
   const cooldownTokens = useRef(new Map<string, number>())
   const rpcFailureStreak = useRef(0)
@@ -137,9 +137,10 @@ export function useBotRunner() {
         const pnl = (positionProfit / managedPosition.entryUSDC) * 100
         const projectedSessionPnl = state.botRealizedPnl + positionProfit
         const movementPct = position.lastCheckPrice > 0 ? Math.abs((currentPrice - position.lastCheckPrice) / position.lastCheckPrice) * 100 : 0
-        const stagnantChecks = movementPct < config.stagnationThresholdPct ? position.stagnantChecks + 1 : 0
-        const peakPnlPct = Math.max(position.peakPnlPct, pnl)
         const ageSeconds = Math.floor((Date.now() - position.openedAt) / 1_000)
+        const stagnationArmed = ageSeconds >= config.minHoldSeconds
+        const stagnantChecks = stagnationArmed && movementPct < config.stagnationThresholdPct ? position.stagnantChecks + 1 : 0
+        const peakPnlPct = Math.max(position.peakPnlPct, pnl)
         const trailingHit = peakPnlPct >= config.trailingActivationPct && pnl <= peakPnlPct - config.trailingDistancePct
         const objectiveExit = targetRankReached && config.objectiveMode === 'reach'
         const profitObjectiveExit = projectedSessionPnl >= config.sessionProfitTarget
@@ -191,16 +192,29 @@ export function useBotRunner() {
           log('INFO', `Closed ${position.symbol} · ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} USDC · rotating markets`)
 
           const afterTrade = useTradeFarmStore.getState()
-          if (deadlineReached || objectiveExit || drawdownExit || afterTrade.botRealizedPnl >= config.sessionProfitTarget || afterTrade.botRealizedPnl <= -config.maxSessionLoss || afterTrade.botConsecutiveLosses >= config.maxConsecutiveLosses) {
-            log('INFO', 'Session objective or guardrail reached. Bot stopped.')
-            halt(drawdownExit || afterTrade.botRealizedPnl <= -config.maxSessionLoss ? 'error' : 'stopped')
+          const rankReachedAfterTrade = afterTrade.botLeaderboardRank !== null && afterTrade.botLeaderboardRank <= config.targetRank
+          let sessionStopReason: string | null = null
+          let stopAsError = false
+          if (deadlineReached) sessionStopReason = 'Session deadline reached'
+          else if ((objectiveExit || rankReachedAfterTrade) && config.objectiveMode === 'reach') sessionStopReason = `Leaderboard target reached · rank #${afterTrade.botLeaderboardRank ?? state.botLeaderboardRank}`
+          else if (afterTrade.botRealizedPnl >= config.sessionProfitTarget) sessionStopReason = `Profit target reached · +${afterTrade.botRealizedPnl.toFixed(2)} USDC`
+          else if (drawdownExit || afterTrade.botRealizedPnl <= -config.maxSessionLoss) {
+            sessionStopReason = `Session loss limit reached · ${afterTrade.botRealizedPnl.toFixed(2)} / -${config.maxSessionLoss.toFixed(2)} USDC`
+            stopAsError = true
+          } else if (afterTrade.botConsecutiveLosses >= config.maxConsecutiveLosses) {
+            sessionStopReason = `Loss-streak circuit breaker reached · ${afterTrade.botConsecutiveLosses}/${config.maxConsecutiveLosses}`
+            stopAsError = true
+          }
+          if (sessionStopReason) {
+            log(stopAsError ? 'ERROR' : 'INFO', `${sessionStopReason}. Bot stopped.`)
+            halt(stopAsError ? 'error' : 'stopped')
             return
           }
           nextDelay = 1_500
           return
         }
 
-        log('HOLD', `No exit signal · movement ${movementPct.toFixed(2)}% · ${stagnantChecks}/${config.stagnantChecksLimit} stagnant checks`)
+        log('HOLD', `No exit signal · movement ${movementPct.toFixed(2)}% · ${stagnationArmed ? `${stagnantChecks}/${config.stagnantChecksLimit} stagnant checks` : `stagnation arms in ${Math.max(0, config.minHoldSeconds - ageSeconds)}s`}`)
         return
       }
 
@@ -215,9 +229,12 @@ export function useBotRunner() {
           markets: useTradeFarmStore.getState().tokens,
           recentTrades: useTradeFarmStore.getState().recentTrades,
           requestedSize: Math.min(config.tradeSize, usdc),
+          strategyMode: config.strategyMode,
           minLiquidityUSDC: config.minLiquidityUSDC,
           minRecentTrades: config.minRecentTrades,
           minBuyPressurePct: config.minBuyPressurePct,
+          maxBuyPressurePct: config.maxBuyPressurePct,
+          minSellDepthMultiple: config.minSellDepthMultiple,
           minLiquidityLockPct: config.minLiquidityLockPct,
           maxCreatorHoldingPct: config.maxCreatorHoldingPct,
           maxWalletFlowPct: config.maxWalletFlowPct,
@@ -267,7 +284,20 @@ export function useBotRunner() {
         log('SCAN', `Manual market · ${symbol} · LP lock ${safety.pct.toFixed(1)}% · creator ${safety.creatorHoldingPct.toFixed(1)}% · entry ${plan.priceImpactPct.toFixed(2)}% / exit ${plan.exitPriceImpactPct.toFixed(2)}% impact`)
       }
 
+      const latestKnownMarket = useTradeFarmStore.getState().tokens.find((market) => market.address.toLowerCase() === tokenAddress.toLowerCase())
+      const executionMarket = await getMarketSnapshot(publicClient, tokenAddress, pairAddress, latestKnownMarket)
+      const executionPlan = buildSafeTradePlan(executionMarket, actualTradeSize, config.maxLiquiditySharePct, config.maxPriceImpactPct)
+      if (!executionPlan) {
+        log('WAIT', `${symbol} reserves changed before execution; entry cancelled by the live entry/exit depth check.`)
+        return
+      }
+      useTradeFarmStore.getState().upsertToken(executionMarket)
+      pairAddress = executionMarket.pair
+      actualTradeSize = executionPlan.size
       if (actualTradeSize < config.tradeSize) log('INFO', `Trade size capped to ${actualTradeSize.toLocaleString()} USDC by balance/liquidity guardrails.`)
+      if (config.strategyMode === 'rank') {
+        log('INFO', `Rank-volume estimate · ${(actualTradeSize + executionPlan.estimatedExitUSDC).toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC volume · ${(actualTradeSize - executionPlan.estimatedExitUSDC).toFixed(2)} USDC round-trip cost before slippage.`)
+      }
       const amountIn = parseUnits(actualTradeSize.toFixed(2), 6)
       const expectedOut = await getPairQuote(publicClient, tokenAddress, pairAddress, amountIn, true)
       log('QUOTE', `${actualTradeSize.toLocaleString()} USDC → ${Number(formatUnits(expectedOut, 18)).toLocaleString('en-US', { maximumFractionDigits: 4 })} ${symbol}`)
@@ -341,7 +371,7 @@ export function useBotRunner() {
     useTradeFarmStore.getState().resetBotSession()
     useTradeFarmStore.getState().setBotStatus('running')
     useTradeFarmStore.getState().setBotNextActionAt(Date.now())
-    log('INFO', `${config.mode === 'auto' ? 'Risk-filtered rotation' : 'Manual'} session started · target rank #${config.targetRank} · profit target ${config.sessionProfitTarget.toLocaleString()} USDC`)
+    log('INFO', `${config.mode === 'auto' ? `${config.strategyMode === 'profit' ? 'Profit-first' : 'Rank-volume'} rotation` : 'Manual'} session started · target rank #${config.targetRank} · profit target ${config.sessionProfitTarget.toLocaleString()} USDC`)
     log('WARN', 'On-chain quality filters reduce selection risk; they cannot guarantee profit or prevent every rug.')
     intervalRef.current = window.setInterval(() => { void runLoop() }, 1_000)
     void runLoop()

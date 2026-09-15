@@ -85,6 +85,7 @@ export interface BotPosition {
 
 export interface BotConfig {
   tradeSize: number
+  strategyMode: 'profit' | 'rank'
   takeProfitPct: number
   stopLossPct: number
   slippagePct: number
@@ -95,6 +96,7 @@ export interface BotConfig {
   targetRank: number
   sessionProfitTarget: number
   maxSessionLoss: number
+  minHoldSeconds: number
   maxHoldSeconds: number
   stagnantChecksLimit: number
   stagnationThresholdPct: number
@@ -105,6 +107,8 @@ export interface BotConfig {
   minLiquidityUSDC: number
   minRecentTrades: number
   minBuyPressurePct: number
+  maxBuyPressurePct: number
+  minSellDepthMultiple: number
   minLiquidityLockPct: number
   maxCreatorHoldingPct: number
   maxWalletFlowPct: number

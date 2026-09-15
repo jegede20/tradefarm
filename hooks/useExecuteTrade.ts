@@ -77,6 +77,7 @@ export function useExecuteTrade() {
   const [receiptBlock, setReceiptBlock] = useState<bigint | null>(null)
   const upsertPosition = useTradeFarmStore((state) => state.upsertPosition)
   const settlePositionSell = useTradeFarmStore((state) => state.settlePositionSell)
+  const setPendingSell = useTradeFarmStore((state) => state.setPendingSell)
   const addTradeHistory = useTradeFarmStore((state) => state.addTradeHistory)
 
   const assertReady = useCallback(() => {
@@ -195,6 +196,7 @@ export function useExecuteTrade() {
       const tokenAddress = getAddress(token)
       const amountIn = parseUnits(amount, 18)
       if (amountIn <= 0n) throw new Error('Enter a valid token amount')
+      setPendingSell({ token: tokenAddress, wallet: client.address })
 
       const market = await resolveStoredMarket(client.publicClient, tokenAddress, client.address)
       const quotedOut = expectedOut ?? await getPairQuote(client.publicClient, tokenAddress, market.pair, amountIn, false)
@@ -265,8 +267,10 @@ export function useExecuteTrade() {
       setError(message)
       setStatus('failed')
       throw cause
+    } finally {
+      setPendingSell(null)
     }
-  }, [addTradeHistory, assertReady, settlePositionSell])
+  }, [addTradeHistory, assertReady, setPendingSell, settlePositionSell])
 
   const reset = useCallback(() => {
     setStatus('idle')
