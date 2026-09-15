@@ -84,6 +84,14 @@ const defaultBotConfig: BotConfig = {
   trailingDistancePct: 2,
   maxPriceImpactPct: 2,
   maxLiquiditySharePct: 1,
+  minLiquidityUSDC: 25_000,
+  minRecentTrades: 3,
+  minBuyPressurePct: 55,
+  minLiquidityLockPct: 90,
+  maxCreatorHoldingPct: 20,
+  maxWalletFlowPct: 70,
+  maxMomentumPct: 8,
+  maxVolatilityPct: 10,
   maxConsecutiveLosses: 3,
   deadline: null,
 }
@@ -231,7 +239,7 @@ export const useTradeFarmStore = create<TradeFarmState>()(
     }),
     {
       name: 'tradefarm-terminal-v2',
-      version: 3,
+      version: 4,
       storage: createJSONStorage(() => localStorage),
       skipHydration: true,
       migrate: (persistedState) => {

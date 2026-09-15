@@ -96,6 +96,14 @@ export interface BotConfig {
   trailingDistancePct: number
   maxPriceImpactPct: number
   maxLiquiditySharePct: number
+  minLiquidityUSDC: number
+  minRecentTrades: number
+  minBuyPressurePct: number
+  minLiquidityLockPct: number
+  maxCreatorHoldingPct: number
+  maxWalletFlowPct: number
+  maxMomentumPct: number
+  maxVolatilityPct: number
   maxConsecutiveLosses: number
   deadline: number | null
 }

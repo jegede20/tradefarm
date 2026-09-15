@@ -56,7 +56,7 @@ export function BotControls() {
   return (
     <section className="panel overflow-hidden rounded-lg">
       <div className="flex items-center justify-between border-b border-border px-5 py-4">
-        <div><p className="panel-title text-[#a78bfa]">Rotation engine</p><h1 className="mt-1 text-lg font-semibold">TradeFarm Bot</h1></div>
+        <div><p className="panel-title text-[#a78bfa]">Risk-filtered rotation engine</p><h1 className="mt-1 text-lg font-semibold">TradeFarm Bot</h1></div>
         <span className={cn('inline-flex items-center gap-2 rounded-full border px-2.5 py-1.5 text-[9px] font-semibold tracking-wider', running ? 'border-success/30 bg-success/10 text-success' : status === 'error' ? 'border-danger/30 bg-danger/10 text-danger' : 'border-border bg-bg-elevated text-text-secondary')}>
           <span className={cn('h-1.5 w-1.5 rounded-full', running ? 'animate-pulse-dot bg-success' : status === 'error' ? 'bg-danger' : 'bg-text-secondary')} /> {status.toUpperCase()}
         </span>
@@ -111,6 +111,20 @@ export function BotControls() {
             <p className="text-[9px] leading-relaxed text-text-secondary">Rank is estimated from recent router-linked Flipt USDC transfers. Defend pauses entries at target and resumes if rank slips; profit and risk guardrails remain authoritative.</p>
           </ConfigSection>
 
+          <ConfigSection title="Pool quality gate">
+            <div className="grid grid-cols-2 gap-3">
+              <NumberField label="Minimum liquidity" value={config.minLiquidityUSDC} min={5000} max={2000000} step={5000} suffix="USDC" onChange={(value) => setConfig({ minLiquidityUSDC: clamp(value, 5000, 2000000) })} />
+              <NumberField label="Recent activity" value={config.minRecentTrades} min={2} max={20} step={1} suffix="TRADES" onChange={(value) => setConfig({ minRecentTrades: clamp(value, 2, 20) })} />
+              <NumberField label="Buy pressure" value={config.minBuyPressurePct} min={50} max={90} step={1} suffix="%" onChange={(value) => setConfig({ minBuyPressurePct: clamp(value, 50, 90) })} />
+              <NumberField label="LP self-lock" value={config.minLiquidityLockPct} min={75} max={100} step={1} suffix="%" onChange={(value) => setConfig({ minLiquidityLockPct: clamp(value, 75, 100) })} />
+              <NumberField label="Creator holdings" value={config.maxCreatorHoldingPct} min={0} max={75} step={1} suffix="% MAX" onChange={(value) => setConfig({ maxCreatorHoldingPct: clamp(value, 0, 75) })} />
+              <NumberField label="Largest wallet flow" value={config.maxWalletFlowPct} min={25} max={90} step={1} suffix="% MAX" onChange={(value) => setConfig({ maxWalletFlowPct: clamp(value, 25, 90) })} />
+              <NumberField label="Maximum momentum" value={config.maxMomentumPct} min={2} max={50} step={1} suffix="%" onChange={(value) => setConfig({ maxMomentumPct: clamp(value, 2, 50) })} />
+              <NumberField label="Maximum volatility" value={config.maxVolatilityPct} min={2} max={50} step={1} suffix="%" onChange={(value) => setConfig({ maxVolatilityPct: clamp(value, 2, 50) })} />
+            </div>
+            <p className="rounded-md border border-warning/20 bg-warning/5 px-3 py-2 text-[9px] leading-relaxed text-text-secondary">Auto mode requires a Hub-verified graduated pool, two-way flow from at least two recent traders, bounded creator holdings, no dominant recent wallet, adequate token-side exit depth, bounded momentum and an on-chain LP lock check. These filters reduce risk; no public-chain heuristic can guarantee profit or prevent every rug.</p>
+          </ConfigSection>
+
           <ConfigSection title="Guardrails">
             <div className="grid grid-cols-2 gap-3">
               <NumberField label="Maximum impact" value={config.maxPriceImpactPct} min={1} max={10} step={0.25} suffix="%" onChange={(value) => setConfig({ maxPriceImpactPct: clamp(value, 1, 10) })} />
@@ -127,7 +141,7 @@ export function BotControls() {
             </div>
             {config.mode === 'manual' ? (
               <input value={config.manualToken} onChange={(event) => setConfig({ manualToken: event.target.value })} placeholder="0x… token address" className="input-terminal h-10 text-[11px]" />
-            ) : <p className="text-[10px] leading-relaxed text-text-secondary">Trades one graduated pool at a time, exits on signal or timeout, then rotates after a two-scan cooldown.</p>}
+            ) : <p className="text-[10px] leading-relaxed text-text-secondary">Observes each pool before entry, ranks only quality-gate survivors, trades one token at a time, then rotates after a two-scan cooldown.</p>}
           </ConfigSection>
         </fieldset>
 

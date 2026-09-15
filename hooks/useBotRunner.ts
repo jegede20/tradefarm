@@ -5,7 +5,7 @@ import { formatUnits, isAddress, parseUnits, type Address } from 'viem'
 import { useAccount, usePublicClient } from 'wagmi'
 import { ERC20_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from '@/lib/contracts'
 import { friendlyContractError, getMarketSnapshot, getPairQuote } from '@/lib/flipt'
-import { buildSafeTradePlan, scanBestToken } from '@/lib/botLogic'
+import { buildSafeTradePlan, scanBestToken, validateGraduatedPoolSafety, type LiquidityLockSnapshot } from '@/lib/botLogic'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { useExecuteTrade } from './useExecuteTrade'
 import type { LogLevel } from '@/types/trading'
@@ -21,7 +21,8 @@ export function useBotRunner() {
   const { executeBuy, executeSell } = useExecuteTrade()
   const intervalRef = useRef<number | null>(null)
   const runningLoop = useRef(false)
-  const previousPrices = useRef(new Map<string, number>())
+  const signalHistory = useRef(new Map<string, number[]>())
+  const liquidityLocks = useRef(new Map<string, LiquidityLockSnapshot>())
   const cooldownTokens = useRef(new Map<string, number>())
   const rpcFailureStreak = useRef(0)
   const mounted = useRef(true)
@@ -177,19 +178,27 @@ export function useBotRunner() {
 
       if (config.mode === 'auto') {
         const scan = await scanBestToken({
+          publicClient,
           markets: useTradeFarmStore.getState().tokens,
+          recentTrades: useTradeFarmStore.getState().recentTrades,
           requestedSize: Math.min(config.tradeSize, usdc),
+          minLiquidityUSDC: config.minLiquidityUSDC,
+          minRecentTrades: config.minRecentTrades,
+          minBuyPressurePct: config.minBuyPressurePct,
+          minLiquidityLockPct: config.minLiquidityLockPct,
+          maxCreatorHoldingPct: config.maxCreatorHoldingPct,
+          maxWalletFlowPct: config.maxWalletFlowPct,
+          maxMomentumPct: config.maxMomentumPct,
+          maxVolatilityPct: config.maxVolatilityPct,
           maxLiquiditySharePct: config.maxLiquiditySharePct,
           maxPriceImpactPct: config.maxPriceImpactPct,
-          previousPrices: previousPrices.current,
+          signalHistory: signalHistory.current,
+          liquidityLocks: liquidityLocks.current,
           cooldownTokens: cooldownTokens.current,
           log,
         })
         useTradeFarmStore.getState().setBotTokensScanned(useTradeFarmStore.getState().botTokensScanned + scan.scanned)
-        if (!scan.best) {
-          log('WAIT', 'No pool passed liquidity and price-impact guardrails.')
-          return
-        }
+        if (!scan.best) return
         tokenAddress = scan.best.address
         pairAddress = scan.best.pair
         symbol = scan.best.market.symbol
@@ -200,12 +209,30 @@ export function useBotRunner() {
         const known = useTradeFarmStore.getState().tokens.find((item) => item.address.toLowerCase() === tokenAddress.toLowerCase())
         const market = await getMarketSnapshot(publicClient, tokenAddress, known?.pair, known)
         useTradeFarmStore.getState().upsertToken(market)
+        const poolTokenSharePct = market.supply > 0 ? market.poolTokenReserve / market.supply * 100 : 0
+        if (!market.graduated || market.reserve < config.minLiquidityUSDC || poolTokenSharePct < 5) {
+          log('WAIT', `Manual market failed the graduated-pool depth gate · ${market.reserve.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC liquidity`)
+          return
+        }
         const plan = buildSafeTradePlan(market, Math.min(config.tradeSize, usdc), config.maxLiquiditySharePct, config.maxPriceImpactPct)
-        if (!plan) { log('WAIT', 'Manual market failed liquidity or impact guardrails.'); return }
+        if (!plan) { log('WAIT', 'Manual market failed trade-size or price-impact guardrails.'); return }
+        const safety = await validateGraduatedPoolSafety(publicClient, tokenAddress, market.pair, liquidityLocks.current)
+        if (!safety.protocolVerified) {
+          log('WARN', 'Manual market rejected · Hub graduation or pair registry mismatch')
+          return
+        }
+        if (safety.creatorHoldingPct > config.maxCreatorHoldingPct) {
+          log('WARN', `Manual market rejected · creator still holds ${safety.creatorHoldingPct.toFixed(1)}% (maximum ${config.maxCreatorHoldingPct}%)`)
+          return
+        }
+        if (safety.pct < config.minLiquidityLockPct) {
+          log('WARN', `Manual market rejected · LP self-lock ${safety.pct.toFixed(1)}% below ${config.minLiquidityLockPct}%`)
+          return
+        }
         pairAddress = market.pair
         symbol = await getSymbol(tokenAddress)
         actualTradeSize = plan.size
-        log('SCAN', `Manual market · ${symbol} · ${plan.priceImpactPct.toFixed(2)}% estimated impact`)
+        log('SCAN', `Manual market · ${symbol} · LP lock ${safety.pct.toFixed(1)}% · creator ${safety.creatorHoldingPct.toFixed(1)}% · ${plan.priceImpactPct.toFixed(2)}% impact`)
       }
 
       if (actualTradeSize < config.tradeSize) log('INFO', `Trade size capped to ${actualTradeSize.toLocaleString()} USDC by balance/liquidity guardrails.`)
@@ -270,10 +297,12 @@ export function useBotRunner() {
     if (config.mode === 'manual' && !isAddress(config.manualToken)) { log('ERROR', 'Enter a valid manual token address.'); return }
     if (config.deadline !== null && config.deadline <= Date.now()) { log('ERROR', 'Choose a future session deadline.'); return }
     if (intervalRef.current !== null) window.clearInterval(intervalRef.current)
+    signalHistory.current.clear()
     useTradeFarmStore.getState().resetBotSession()
     useTradeFarmStore.getState().setBotStatus('running')
     useTradeFarmStore.getState().setBotNextActionAt(Date.now())
-    log('INFO', `${config.mode === 'auto' ? 'Rotation' : 'Manual'} session started · target rank #${config.targetRank} · profit target ${config.sessionProfitTarget.toLocaleString()} USDC`)
+    log('INFO', `${config.mode === 'auto' ? 'Risk-filtered rotation' : 'Manual'} session started · target rank #${config.targetRank} · profit target ${config.sessionProfitTarget.toLocaleString()} USDC`)
+    log('WARN', 'On-chain quality filters reduce selection risk; they cannot guarantee profit or prevent every rug.')
     intervalRef.current = window.setInterval(() => { void runLoop() }, 1_000)
     void runLoop()
   }, [address, chainId, isConnected, log, runLoop])
