@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-surface: #13131a;
+  --bg-elevated: #1c1c26;
+  --border: #2a2a35;
+  --text-primary: #f5f5f7;
+  --text-secondary: #9898a3;
+  --accent-primary: #7c3aed;
+  --accent-glow: #7c3aed33;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --bg-primary-rgb: 10 10 15;
+  --bg-surface-rgb: 19 19 26;
+  --bg-elevated-rgb: 28 28 38;
+  --border-rgb: 42 42 53;
+  --text-primary-rgb: 245 245 247;
+  --text-secondary-rgb: 152 152 163;
+  --accent-primary-rgb: 124 58 237;
+  --success-rgb: 34 197 94;
+  --danger-rgb: 239 68 68;
+  --warning-rgb: 245 158 11;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--bg-primary); }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 48% -15%, rgba(124, 58, 237, .1), transparent 34%),
+    var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { color: white; background: rgba(124, 58, 237, .7); }
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #30303c; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #414150; }
+
+@layer components {
+  .panel {
+    @apply border border-border bg-bg-surface;
+  }
+  .panel-title {
+    @apply text-[10px] font-semibold uppercase tracking-[0.16em] text-text-secondary;
+  }
+  .mono {
+    @apply font-mono tabular-nums;
+  }
+  .focus-ring {
+    @apply outline-none transition focus:border-accent-primary focus:ring-2 focus:ring-accent-glow;
+  }
+  .input-terminal {
+    @apply focus-ring h-11 w-full rounded-md border border-border bg-bg-primary px-3 font-mono text-sm text-text-primary;
+  }
+  .input-terminal::placeholder {
+    color: rgba(152, 152, 163, .5);
+  }
+  .button-secondary {
+    @apply rounded-md border border-border bg-bg-elevated text-sm font-medium text-text-primary transition hover:border-text-secondary/50 hover:bg-[#232330] disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .data-label {
+    @apply text-[10px] uppercase tracking-wider text-text-secondary;
+  }
+}
+
+input[type='number'] { appearance: textfield; }
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button { appearance: none; margin: 0; }
+input[type='range'] { accent-color: var(--accent-primary); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
