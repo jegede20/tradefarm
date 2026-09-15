@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { decodeEventLog, formatUnits, parseAbiItem, type Address, type Log, type PublicClient } from 'viem'
 import { usePublicClient } from 'wagmi'
-import { ROUTER_ADDRESS, USDC_ADDRESS } from '@/lib/contracts'
+import { HUB_BUY_EVENT_TOPIC, HUB_SELL_EVENT_TOPIC, ROUTER_ADDRESS, USDC_ADDRESS } from '@/lib/contracts'
 import type { LeaderboardRow } from '@/types/trading'
 
 const transferEvent = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)')
-const BUY_EVENT_TOPIC = '0x112dc08c6be44af9aebcd443037a82482908589198e8a4682ba423a81c87202f'
-const SELL_EVENT_TOPIC = '0x3a3fb3844a4a3578d1c660c5d0d81d6a02d050152df03f2a3e732a4b07c1a9e6'
+const BUY_EVENT_TOPIC = HUB_BUY_EVENT_TOPIC
+const SELL_EVENT_TOPIC = HUB_SELL_EVENT_TOPIC
 // Arc caps dense USDC Transfer queries at 2,000 results. A 256-block
 // window stays below the current cap while eight windows retain the same
 // recent-chain coverage as the former 512 x 4 strategy.

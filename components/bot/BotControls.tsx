@@ -26,6 +26,8 @@ export function BotControls() {
   const consecutiveLosses = useTradeFarmStore((state) => state.botConsecutiveLosses)
   const sessionStartedAt = useTradeFarmStore((state) => state.botSessionStartedAt)
   const leaderboardRank = useTradeFarmStore((state) => state.botLeaderboardRank)
+  const marketActivityReady = useTradeFarmStore((state) => state.marketActivityReady)
+  const marketActivityTokenCount = useTradeFarmStore((state) => state.marketActivityTokenCount)
   const setConfig = useTradeFarmStore((state) => state.setBotConfig)
   const { startBot, stopBot, leaderboardSource, leaderboardLoading } = useBotRunnerControls()
   const { data: usdcRaw } = useReadContract({
@@ -131,7 +133,7 @@ export function BotControls() {
               <NumberField label="Maximum momentum" value={config.maxMomentumPct} min={2} max={50} step={1} suffix="%" onChange={(value) => setConfig({ maxMomentumPct: clamp(value, 2, 50) })} />
               <NumberField label="Maximum volatility" value={config.maxVolatilityPct} min={2} max={50} step={1} suffix="%" onChange={(value) => setConfig({ maxVolatilityPct: clamp(value, 2, 50) })} />
             </div>
-            <p className="rounded-md border border-warning/20 bg-warning/5 px-3 py-2 text-[9px] leading-relaxed text-text-secondary">Auto mode requires a Hub-verified graduated pool, two-way flow from at least two recent traders, bounded creator holdings, no dominant recent wallet, adequate token-side exit depth, bounded momentum and an on-chain LP lock check. These filters reduce risk; no public-chain heuristic can guarantee profit or prevent every rug.</p>
+            <p className="rounded-md border border-warning/20 bg-warning/5 px-3 py-2 text-[9px] leading-relaxed text-text-secondary">Auto mode requires a Hub-verified graduated pool, two-way flow from at least two recent traders, bounded creator holdings, no dominant recent wallet, an executable full-position exit-depth check, bounded momentum and an on-chain LP lock check. These filters reduce risk; no public-chain heuristic can guarantee profit or prevent every rug.</p>
           </ConfigSection>
 
           <ConfigSection title="Guardrails">
@@ -150,7 +152,7 @@ export function BotControls() {
             </div>
             {config.mode === 'manual' ? (
               <input value={config.manualToken} onChange={(event) => setConfig({ manualToken: event.target.value })} placeholder="0x… token address" className="input-terminal h-10 text-[11px]" />
-            ) : <p className="text-[10px] leading-relaxed text-text-secondary">Observes each pool before entry, ranks only quality-gate survivors, trades one token at a time, then rotates after a two-scan cooldown.</p>}
+            ) : <div className="space-y-2"><p className="text-[10px] leading-relaxed text-text-secondary">Backfills recent Hub activity, ranks active pools before entry, trades one token at a time, then rotates after a two-scan cooldown.</p><p className={`font-mono text-[9px] ${marketActivityReady ? 'text-success' : 'text-warning'}`}>{marketActivityReady ? `${marketActivityTokenCount} ACTIVE TOKENS INDEXED` : 'INDEXING RECENT HUB ACTIVITY…'}</p></div>}
           </ConfigSection>
         </fieldset>
 

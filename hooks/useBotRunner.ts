@@ -83,6 +83,12 @@ export function useBotRunner() {
         }
       }
 
+      if (!state.botPosition && config.mode === 'auto' && !state.marketActivityReady) {
+        log('WAIT', 'Indexing recent Hub activity before the first quality scan…')
+        nextDelay = 5_000
+        return
+      }
+
       const usdcBalance = await publicClient.readContract({ address: USDC_ADDRESS, abi: ERC20_ABI, functionName: 'balanceOf', args: [address] })
       const usdc = Number(formatUnits(usdcBalance, 6))
       if (usdc < 100 && !state.botPosition) {
@@ -231,13 +237,12 @@ export function useBotRunner() {
         const known = useTradeFarmStore.getState().tokens.find((item) => item.address.toLowerCase() === tokenAddress.toLowerCase())
         const market = await getMarketSnapshot(publicClient, tokenAddress, known?.pair, known)
         useTradeFarmStore.getState().upsertToken(market)
-        const poolTokenSharePct = market.supply > 0 ? market.poolTokenReserve / market.supply * 100 : 0
-        if (!market.graduated || market.reserve < config.minLiquidityUSDC || poolTokenSharePct < 5) {
-          log('WAIT', `Manual market failed the graduated-pool depth gate · ${market.reserve.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC liquidity`)
+        if (!market.graduated || market.reserve < config.minLiquidityUSDC) {
+          log('WAIT', `Manual market failed the graduated-pool liquidity gate · ${market.reserve.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC liquidity`)
           return
         }
         const plan = buildSafeTradePlan(market, Math.min(config.tradeSize, usdc), config.maxLiquiditySharePct, config.maxPriceImpactPct)
-        if (!plan) { log('WAIT', 'Manual market failed trade-size or price-impact guardrails.'); return }
+        if (!plan) { log('WAIT', 'Manual market failed trade-size or executable entry/exit impact guardrails.'); return }
         const safety = await validateGraduatedPoolSafety(publicClient, tokenAddress, market.pair, liquidityLocks.current)
         if (!safety.protocolVerified) {
           log('WARN', 'Manual market rejected · Hub graduation or pair registry mismatch')
@@ -254,7 +259,7 @@ export function useBotRunner() {
         pairAddress = market.pair
         symbol = await getSymbol(tokenAddress)
         actualTradeSize = plan.size
-        log('SCAN', `Manual market · ${symbol} · LP lock ${safety.pct.toFixed(1)}% · creator ${safety.creatorHoldingPct.toFixed(1)}% · ${plan.priceImpactPct.toFixed(2)}% impact`)
+        log('SCAN', `Manual market · ${symbol} · LP lock ${safety.pct.toFixed(1)}% · creator ${safety.creatorHoldingPct.toFixed(1)}% · entry ${plan.priceImpactPct.toFixed(2)}% / exit ${plan.exitPriceImpactPct.toFixed(2)}% impact`)
       }
 
       if (actualTradeSize < config.tradeSize) log('INFO', `Trade size capped to ${actualTradeSize.toLocaleString()} USDC by balance/liquidity guardrails.`)

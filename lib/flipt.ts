@@ -1,5 +1,5 @@
 import { formatUnits, type Address, type PublicClient } from 'viem'
-import { ERC20_ABI, PAIR_ABI, ROUTER_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from './contracts'
+import { ERC20_ABI, MULTICALL3_ADDRESS, PAIR_ABI, ROUTER_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from './contracts'
 import type { Token } from '@/types/trading'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
@@ -71,6 +71,83 @@ export async function getMarketSnapshot(
     graduated: true,
     discoveredAt: previous?.discoveredAt ?? Date.now(),
   }
+}
+
+export async function loadMarketSnapshots(
+  publicClient: PublicClient,
+  tokenAddresses: Address[],
+  existing: Token[] = [],
+) {
+  const uniqueTokens = [...new Map(tokenAddresses.map((token) => [token.toLowerCase(), token])).values()]
+  if (uniqueTokens.length === 0) return []
+
+  const pairResults = await publicClient.multicall({
+    allowFailure: true,
+    multicallAddress: MULTICALL3_ADDRESS,
+    contracts: uniqueTokens.map((token) => ({
+      address: ROUTER_ADDRESS,
+      abi: ROUTER_ABI,
+      functionName: 'getPair' as const,
+      args: [token, USDC_ADDRESS] as const,
+    })),
+  })
+  const markets = uniqueTokens.flatMap((token, index) => {
+    const result = pairResults[index]
+    if (result.status !== 'success' || isZeroAddress(result.result as Address)) return []
+    return [{ token, pair: result.result as Address }]
+  })
+  if (markets.length === 0) return []
+
+  const detailResults = await publicClient.multicall({
+    allowFailure: true,
+    multicallAddress: MULTICALL3_ADDRESS,
+    contracts: markets.flatMap(({ token, pair }) => [
+      { address: pair, abi: PAIR_ABI, functionName: 'token0' as const },
+      { address: pair, abi: PAIR_ABI, functionName: 'getReserves' as const },
+      { address: token, abi: TOKEN_METADATA_ABI, functionName: 'symbol' as const },
+      { address: token, abi: TOKEN_METADATA_ABI, functionName: 'name' as const },
+      { address: token, abi: ERC20_ABI, functionName: 'totalSupply' as const },
+    ]),
+  })
+
+  return markets.flatMap(({ token, pair }, index) => {
+    const offset = index * 5
+    const token0Result = detailResults[offset]
+    const reservesResult = detailResults[offset + 1]
+    if (token0Result.status !== 'success' || reservesResult.status !== 'success') return []
+
+    const previous = existing.find((market) => market.address.toLowerCase() === token.toLowerCase())
+    const token0 = token0Result.result as Address
+    const [reserve0, reserve1] = reservesResult.result as readonly [bigint, bigint, number]
+    const usdcIsToken0 = token0.toLowerCase() === USDC_ADDRESS.toLowerCase()
+    const usdcRaw = usdcIsToken0 ? reserve0 : reserve1
+    const tokenRaw = usdcIsToken0 ? reserve1 : reserve0
+    const reserve = Number(formatUnits(usdcRaw, 6))
+    const poolTokenReserve = Number(formatUnits(tokenRaw, 18))
+    const price = poolTokenReserve > 0 ? reserve / poolTokenReserve : 0
+    const priorPrice = previous?.price ?? price
+    const symbolResult = detailResults[offset + 2]
+    const nameResult = detailResults[offset + 3]
+    const supplyResult = detailResults[offset + 4]
+    const symbol = symbolResult.status === 'success' ? String(symbolResult.result) : previous?.symbol ?? `TKN${token.slice(-3).toUpperCase()}`
+    const name = nameResult.status === 'success' ? String(nameResult.result) : previous?.name ?? 'Flipt Token'
+    const totalSupply = supplyResult.status === 'success' ? supplyResult.result as bigint : 0n
+
+    return [{
+      address: token,
+      pair,
+      symbol,
+      name,
+      price,
+      priceChange24h: priorPrice > 0 ? ((price - priorPrice) / priorPrice) * 100 : 0,
+      volume: previous?.volume ?? 0,
+      reserve,
+      poolTokenReserve,
+      supply: Number(formatUnits(totalSupply, 18)),
+      graduated: true,
+      discoveredAt: previous?.discoveredAt ?? Date.now(),
+    } satisfies Token]
+  })
 }
 
 export async function loadRecentMarkets(publicClient: PublicClient, limit = 12, existing: Token[] = []) {

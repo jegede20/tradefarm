@@ -75,6 +75,18 @@ function ownerMatches(owner: string | undefined, wallet: string) {
   return !owner || owner.toLowerCase() === wallet.toLowerCase()
 }
 
+function mergeRecentTradeRows(existing: RecentTrade[], incoming: RecentTrade[], tokens: Token[]) {
+  const symbols = new Map(tokens.map((token) => [token.address.toLowerCase(), token.symbol]))
+  const byId = new Map(existing.map((trade) => [trade.id, trade]))
+  for (const trade of incoming) byId.set(trade.id, trade)
+  const cutoff = Date.now() - 15 * 60_000
+  return [...byId.values()]
+    .filter((trade) => trade.timestamp >= cutoff)
+    .map((trade) => ({ ...trade, symbol: symbols.get(trade.token.toLowerCase()) ?? trade.symbol }))
+    .sort((left, right) => right.timestamp - left.timestamp)
+    .slice(0, 5_000)
+}
+
 const defaultBotConfig: BotConfig = {
   tradeSize: 5_000,
   takeProfitPct: 7,
@@ -128,6 +140,8 @@ interface TradeFarmState {
   botLeaderboardRank: number | null
   lastBotAction: number | null
   networkConnected: boolean
+  marketActivityReady: boolean
+  marketActivityTokenCount: number
   setTokens: (tokens: Token[]) => void
   upsertToken: (token: Token) => void
   updateToken: (address: string, patch: Partial<Token>) => void
@@ -141,6 +155,7 @@ interface TradeFarmState {
   setStoredPair: (token: string, pair: Address, wallet?: Address) => void
   addPricePoint: (point: PricePoint) => void
   addRecentTrade: (trade: RecentTrade) => void
+  mergeRecentTrades: (trades: RecentTrade[]) => void
   addTradeHistory: (trade: TradeHistoryItem) => void
   setBotStatus: (status: BotStatus) => void
   addBotLog: (level: BotLog['level'], message: string) => void
@@ -153,6 +168,7 @@ interface TradeFarmState {
   recordBotTrade: (profit: number, volume: number) => void
   setBotLeaderboardRank: (rank: number | null) => void
   setNetworkConnected: (connected: boolean) => void
+  setMarketActivityStatus: (ready: boolean, tokenCount?: number) => void
 }
 
 export const useTradeFarmStore = create<TradeFarmState>()(
@@ -184,8 +200,13 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       botLeaderboardRank: null,
       lastBotAction: null,
       networkConnected: false,
+      marketActivityReady: false,
+      marketActivityTokenCount: 0,
 
-      setTokens: (tokens) => set({ tokens }),
+      setTokens: (tokens) => set((state) => ({
+        tokens,
+        recentTrades: mergeRecentTradeRows(state.recentTrades, [], tokens),
+      })),
       upsertToken: (token) => set((state) => {
         const exists = state.tokens.some((item) => item.address.toLowerCase() === token.address.toLowerCase())
         return { tokens: exists ? state.tokens.map((item) => item.address.toLowerCase() === token.address.toLowerCase() ? { ...item, ...token } : item) : [token, ...state.tokens] }
@@ -282,7 +303,8 @@ export const useTradeFarmStore = create<TradeFarmState>()(
           : state.botPosition,
       })),
       addPricePoint: (point) => set((state) => ({ priceHistory: [...state.priceHistory, point].slice(-100) })),
-      addRecentTrade: (trade) => set((state) => ({ recentTrades: [trade, ...state.recentTrades].slice(0, 50) })),
+      addRecentTrade: (trade) => set((state) => ({ recentTrades: mergeRecentTradeRows(state.recentTrades, [trade], state.tokens) })),
+      mergeRecentTrades: (trades) => set((state) => ({ recentTrades: mergeRecentTradeRows(state.recentTrades, trades, state.tokens) })),
       addTradeHistory: (trade) => set((state) => ({ tradeHistory: [trade, ...state.tradeHistory] })),
       setBotStatus: (botStatus) => set({ botStatus, lastBotAction: Date.now() }),
       addBotLog: (level, message) => set((state) => ({
@@ -310,6 +332,7 @@ export const useTradeFarmStore = create<TradeFarmState>()(
       })),
       setBotLeaderboardRank: (botLeaderboardRank) => set({ botLeaderboardRank }),
       setNetworkConnected: (networkConnected) => set({ networkConnected }),
+      setMarketActivityStatus: (marketActivityReady, marketActivityTokenCount = 0) => set({ marketActivityReady, marketActivityTokenCount }),
     }),
     {
       name: 'tradefarm-terminal-v2',

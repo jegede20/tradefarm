@@ -5,33 +5,156 @@ import {
   createPublicClient,
   formatUnits,
   isAddress,
-  parseEventLogs,
   webSocket,
   type Address,
+  type Hex,
+  type Log,
   type PublicClient,
 } from 'viem'
 import { arcTestnet } from '@/lib/chains'
-import {
-  CURVE_BUY_SELECTOR,
-  ERC20_ABI,
-  GRADUATE_SELECTOR,
-  POOL_BUY_SELECTOR,
-  ROUTER_ADDRESS,
-  SELL_SELECTOR,
-} from '@/lib/contracts'
-import { getMarketSnapshot, loadRecentMarkets } from '@/lib/flipt'
+import { HUB_BUY_EVENT_TOPIC, HUB_SELL_EVENT_TOPIC, ROUTER_ADDRESS } from '@/lib/contracts'
+import { loadMarketSnapshots } from '@/lib/flipt'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
+import type { RecentTrade, Token } from '@/types/trading'
 
-function calldataAddress(input: `0x${string}`): Address | null {
-  if (input.length < 74) return null
-  const candidate = `0x${input.slice(34, 74)}`
-  return isAddress(candidate) ? candidate : null
+const ACTIVITY_WINDOW_BLOCKS = 256n
+const FULL_ACTIVITY_WINDOWS = 6
+const INCREMENTAL_ACTIVITY_WINDOWS = 2
+const ACTIVE_MARKET_LIMIT = 64
+const BLOCK_TIME_MS = 505
+
+function isTransientRpcFailure(cause: unknown) {
+  const message = cause instanceof Error ? cause.message : String(cause)
+  return /http request failed|failed to fetch|fetch failed|network error|timeout|timed out|socket|429|rate.?limit|limit exceeded|econn|temporarily unavailable/i.test(message)
 }
 
-function calldataAmount(input: `0x${string}`, word: number) {
-  const start = 10 + word * 64
-  const value = input.slice(start, start + 64)
-  return value.length === 64 ? BigInt(`0x${value}`) : 0n
+async function withRpcRetry<T>(operation: () => Promise<T>) {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await operation()
+    } catch (cause) {
+      lastError = cause
+      if (!isTransientRpcFailure(cause) || attempt === 3) throw cause
+      await new Promise((resolve) => window.setTimeout(resolve, 350 * 2 ** attempt))
+    }
+  }
+  throw lastError
+}
+
+function dataWord(data: Hex, index: number) {
+  const start = 2 + index * 64
+  const word = data.slice(start, start + 64)
+  return word.length === 64 ? BigInt(`0x${word}`) : 0n
+}
+
+function topicAddress(topic?: Hex) {
+  if (!topic) return null
+  const candidate = `0x${topic.slice(-40)}`
+  return isAddress(candidate) ? candidate as Address : null
+}
+
+function parseHubTrades(
+  logs: Log[],
+  latestBlock: bigint,
+  latestTimestampMs: number,
+  blockTimeMs = BLOCK_TIME_MS,
+  knownMarkets: Token[] = [],
+) {
+  const symbols = new Map(knownMarkets.map((market) => [market.address.toLowerCase(), market.symbol]))
+  return logs.flatMap((log): RecentTrade[] => {
+    const topic = log.topics[0]?.toLowerCase()
+    if (topic !== HUB_BUY_EVENT_TOPIC && topic !== HUB_SELL_EVENT_TOPIC) return []
+    if (!log.transactionHash) return []
+    const token = topicAddress(log.topics[1])
+    const wallet = topicAddress(log.topics[2])
+    if (!token || !wallet) return []
+
+    // Verified Hub trade events encode amountIn in word 0. Buy word 2 is
+    // actual token output; sell word 1 is actual USDC output.
+    const isBuy = topic === HUB_BUY_EVENT_TOPIC
+    const tokenRaw = isBuy ? dataWord(log.data, 2) : dataWord(log.data, 0)
+    const usdcRaw = isBuy ? dataWord(log.data, 0) : dataWord(log.data, 1)
+    if (tokenRaw <= 0n || usdcRaw <= 0n) return []
+    const amount = Number(formatUnits(tokenRaw, 18))
+    const usdc = Number(formatUnits(usdcRaw, 6))
+    if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(usdc) || usdc <= 0) return []
+    const ageBlocks = log.blockNumber && latestBlock >= log.blockNumber ? Number(latestBlock - log.blockNumber) : 0
+
+    return [{
+      id: `${log.transactionHash}-${log.logIndex ?? 0}`,
+      timestamp: Math.max(0, Math.round(latestTimestampMs - ageBlocks * blockTimeMs)),
+      type: isBuy ? 'BUY' : 'SELL',
+      symbol: symbols.get(token.toLowerCase()) ?? `TKN${token.slice(-3).toUpperCase()}`,
+      token,
+      amount,
+      price: usdc / amount,
+      wallet,
+    }]
+  })
+}
+
+function rankActiveTokens(trades: RecentTrade[]) {
+  const cutoff = Date.now() - 10 * 60_000
+  const activity = new Map<string, {
+    token: Address
+    buys: number
+    sells: number
+    buyVolume: number
+    sellVolume: number
+    wallets: Set<string>
+  }>()
+
+  for (const trade of trades) {
+    if (trade.timestamp < cutoff) continue
+    const key = trade.token.toLowerCase()
+    const current = activity.get(key) ?? { token: trade.token, buys: 0, sells: 0, buyVolume: 0, sellVolume: 0, wallets: new Set<string>() }
+    const value = trade.amount * trade.price
+    if (trade.type === 'BUY') {
+      current.buys += 1
+      current.buyVolume += value
+    } else {
+      current.sells += 1
+      current.sellVolume += value
+    }
+    current.wallets.add(trade.wallet.toLowerCase())
+    activity.set(key, current)
+  }
+
+  return [...activity.values()]
+    .filter((item) => item.buys > 0 && item.sells > 0 && item.buys + item.sells >= 3 && item.wallets.size >= 2)
+    .sort((left, right) => {
+      const leftBalancedFlow = Math.min(left.buyVolume, left.sellVolume)
+      const rightBalancedFlow = Math.min(right.buyVolume, right.sellVolume)
+      return right.buys + right.sells - (left.buys + left.sells)
+        || right.wallets.size - left.wallets.size
+        || rightBalancedFlow - leftBalancedFlow
+    })
+    .slice(0, ACTIVE_MARKET_LIMIT)
+    .map((item) => item.token)
+}
+
+async function fetchRecentHubLogs(publicClient: PublicClient, windows: number) {
+  const latest = await withRpcRetry(() => publicClient.getBlockNumber())
+  const logs: Log[] = []
+  let toBlock = latest
+  for (let windowIndex = 0; windowIndex < windows; windowIndex += 1) {
+    const fromBlock = toBlock >= ACTIVITY_WINDOW_BLOCKS - 1n ? toBlock - (ACTIVITY_WINDOW_BLOCKS - 1n) : 0n
+    logs.push(...await withRpcRetry(() => publicClient.getLogs({ address: ROUTER_ADDRESS, fromBlock, toBlock })))
+    if (fromBlock === 0n) break
+    toBlock = fromBlock - 1n
+  }
+  const oldest = logs.reduce((block, log) => log.blockNumber && log.blockNumber < block ? log.blockNumber : block, latest)
+  const [latestHeader, oldestHeader] = await Promise.all([
+    withRpcRetry(() => publicClient.getBlock({ blockNumber: latest })),
+    withRpcRetry(() => publicClient.getBlock({ blockNumber: oldest })),
+  ])
+  const observedBlocks = Number(latest - oldest)
+  const observedMs = Number(latestHeader.timestamp - oldestHeader.timestamp) * 1_000
+  const blockTimeMs = observedBlocks > 0 && observedMs > 0
+    ? Math.min(2_000, Math.max(250, observedMs / observedBlocks))
+    : BLOCK_TIME_MS
+  return { logs, latest, latestTimestampMs: Number(latestHeader.timestamp) * 1_000, blockTimeMs }
 }
 
 export function useTokenDiscovery() {
@@ -42,14 +165,106 @@ export function useTokenDiscovery() {
     let attempt = 0
     let cleanups: Array<() => void> = []
     let lastSelectedRefresh = 0
-    let lastMarketSync = 0
-    const seenTransactions = new Set<string>()
+    let lastActivitySync = 0
+    let activitySyncing = false
+    let marketRefreshRunning = false
+    let marketFlushTimer: number | null = null
+    let activityRetryTimer: number | null = null
+    const pendingMarketRefresh = new Set<Address>()
+    const marketRetryAfter = new Map<string, number>()
     const store = useTradeFarmStore
+    store.getState().setMarketActivityStatus(false, 0)
 
-    const updateMarket = async (client: PublicClient, tokenAddress: Address) => {
-      const existing = store.getState().tokens.find((item) => item.address.toLowerCase() === tokenAddress.toLowerCase())
-      const snapshot = await getMarketSnapshot(client, tokenAddress, existing?.pair, existing)
-      store.getState().upsertToken(snapshot)
+    const mergeMarkets = (snapshots: Token[]) => {
+      if (snapshots.length === 0 || stopped) return
+      const snapshotKeys = new Set(snapshots.map((market) => market.address.toLowerCase()))
+      const retained = store.getState().tokens.filter((market) => !snapshotKeys.has(market.address.toLowerCase()))
+      store.getState().setTokens([...snapshots, ...retained].slice(0, 240))
+    }
+
+    const loadSnapshots = async (client: PublicClient, tokens: Address[]) => {
+      if (tokens.length === 0) return []
+      return withRpcRetry(() => loadMarketSnapshots(client, tokens, store.getState().tokens))
+    }
+
+    const flushMarketRefresh = async (client: PublicClient) => {
+      if (stopped || marketRefreshRunning || activitySyncing || pendingMarketRefresh.size === 0) return
+      marketRefreshRunning = true
+      const tokens = [...pendingMarketRefresh].slice(0, ACTIVE_MARKET_LIMIT)
+      tokens.forEach((token) => pendingMarketRefresh.delete(token))
+      try {
+        const snapshots = await loadSnapshots(client, tokens)
+        mergeMarkets(snapshots)
+        const resolved = new Set(snapshots.map((market) => market.address.toLowerCase()))
+        for (const token of tokens) {
+          if (!resolved.has(token.toLowerCase())) marketRetryAfter.set(token.toLowerCase(), Date.now() + 30_000)
+        }
+        const selected = store.getState().selectedToken.toLowerCase()
+        const selectedMarket = snapshots.find((market) => market.address.toLowerCase() === selected)
+        if (selectedMarket) store.getState().addPricePoint({ time: Date.now(), price: selectedMarket.price })
+      } catch {
+        tokens.forEach((token) => pendingMarketRefresh.add(token))
+      } finally {
+        marketRefreshRunning = false
+        if (!stopped && pendingMarketRefresh.size > 0 && marketFlushTimer === null) {
+          marketFlushTimer = window.setTimeout(() => {
+            marketFlushTimer = null
+            void flushMarketRefresh(client)
+          }, 2_000)
+        }
+      }
+    }
+
+    const queueMarketRefresh = (client: PublicClient, tokens: Address[]) => {
+      const now = Date.now()
+      tokens.forEach((token) => {
+        if ((marketRetryAfter.get(token.toLowerCase()) ?? 0) <= now) pendingMarketRefresh.add(token)
+      })
+      if (pendingMarketRefresh.size === 0 || marketFlushTimer !== null) return
+      marketFlushTimer = window.setTimeout(() => {
+        marketFlushTimer = null
+        void flushMarketRefresh(client)
+      }, 750)
+    }
+
+    const healthy = () => {
+      attempt = 0
+      store.getState().setNetworkConnected(true)
+    }
+
+    const syncActivity = async (client: PublicClient, full: boolean) => {
+      if (stopped || activitySyncing) return
+      activitySyncing = true
+      try {
+        const backfill = await fetchRecentHubLogs(client, full ? FULL_ACTIVITY_WINDOWS : INCREMENTAL_ACTIVITY_WINDOWS)
+        const trades = parseHubTrades(backfill.logs, backfill.latest, backfill.latestTimestampMs, backfill.blockTimeMs, store.getState().tokens)
+        store.getState().mergeRecentTrades(trades)
+        const currentTrades = store.getState().recentTrades
+        const activeTokens = rankActiveTokens(currentTrades)
+        const snapshots = await loadSnapshots(client, activeTokens)
+        mergeMarkets(snapshots)
+        const cutoff = Date.now() - 10 * 60_000
+        const indexedTokenCount = new Set(currentTrades.filter((trade) => trade.timestamp >= cutoff).map((trade) => trade.token.toLowerCase())).size
+        store.getState().setMarketActivityStatus(true, indexedTokenCount)
+        healthy()
+      } catch {
+        store.getState().setNetworkConnected(false)
+        if (full && !stopped && !store.getState().marketActivityReady && activityRetryTimer === null) {
+          activityRetryTimer = window.setTimeout(() => {
+            activityRetryTimer = null
+            void syncActivity(client, true)
+          }, 5_000)
+        }
+      } finally {
+        activitySyncing = false
+        if (pendingMarketRefresh.size > 0) void flushMarketRefresh(client)
+      }
+    }
+
+    const updateSelectedMarket = async (client: PublicClient, tokenAddress: Address) => {
+      const [snapshot] = await loadSnapshots(client, [tokenAddress])
+      if (!snapshot) throw new Error('Selected token has no graduated Flipt pool')
+      mergeMarkets([snapshot])
       return snapshot
     }
 
@@ -73,76 +288,21 @@ export function useTokenDiscovery() {
         attempt += 1
         reconnectTimer.current = window.setTimeout(() => {
           reconnectTimer.current = null
+          lastActivitySync = 0
           connect()
         }, delay)
       }
 
-      const healthy = () => {
-        attempt = 0
-        store.getState().setNetworkConnected(true)
-      }
-
-      const syncMarkets = async () => {
-        try {
-          const markets = await loadRecentMarkets(client, 12, store.getState().tokens)
-          markets.forEach((market) => store.getState().upsertToken(market))
-          healthy()
-        } catch {
-          // Keep the last verified snapshot; the block stream will retry.
-        }
-      }
-
       try {
-        // Flipt emits Hub events for buys, sells, launches and graduations. We
-        // resolve each event's transaction selector instead of pretending that
-        // ERC-20 Transfer events are emitted by the Hub itself.
         const unwatchHub = client.watchEvent({
           address: ROUTER_ADDRESS,
           onLogs: (logs) => {
             healthy()
-            for (const event of logs) {
-              const txHash = event.transactionHash
-              if (!txHash || seenTransactions.has(txHash)) continue
-              seenTransactions.add(txHash)
-              if (seenTransactions.size > 800) seenTransactions.delete(seenTransactions.values().next().value ?? '')
-
-              void client.getTransaction({ hash: txHash }).then(async (transaction) => {
-                const selector = transaction.input.slice(0, 10).toLowerCase()
-                const isBuy = selector === POOL_BUY_SELECTOR || selector === CURVE_BUY_SELECTOR
-                const isSell = selector === SELL_SELECTOR
-                const isGraduate = selector === GRADUATE_SELECTOR
-                if (!isBuy && !isSell && !isGraduate) return
-                const tokenAddress = calldataAddress(transaction.input)
-                if (!tokenAddress) return
-                const market = await updateMarket(client, tokenAddress).catch(() => null)
-                if (!market || isGraduate) return
-
-                const receipt = await client.getTransactionReceipt({ hash: txHash })
-                const transfers = parseEventLogs({ abi: ERC20_ABI, eventName: 'Transfer', logs: receipt.logs, strict: false })
-                  .filter((log) => log.address.toLowerCase() === tokenAddress.toLowerCase())
-                const walletTransfer = transfers.find((log) => isBuy
-                  ? log.args.to?.toLowerCase() === transaction.from.toLowerCase()
-                  : log.args.from?.toLowerCase() === transaction.from.toLowerCase()) ?? transfers[0]
-                const amount = Number(formatUnits(walletTransfer?.args.value ?? 0n, 18))
-                const inputRaw = calldataAmount(transaction.input, 1)
-                const usdcVolume = isBuy ? Number(formatUnits(inputRaw, 6)) : amount * market.price
-
-                store.getState().addRecentTrade({
-                  id: txHash,
-                  timestamp: Date.now(),
-                  type: isBuy ? 'BUY' : 'SELL',
-                  symbol: market.symbol,
-                  token: tokenAddress,
-                  amount,
-                  price: market.price,
-                  wallet: transaction.from,
-                })
-                store.getState().updateToken(tokenAddress, { volume: market.volume + usdcVolume })
-                if (store.getState().selectedToken.toLowerCase() === tokenAddress.toLowerCase()) {
-                  store.getState().addPricePoint({ time: Date.now(), price: market.price })
-                }
-              }).catch(() => undefined)
-            }
+            const latestBlock = logs.reduce((block, log) => log.blockNumber && log.blockNumber > block ? log.blockNumber : block, 0n)
+            const trades = parseHubTrades(logs, latestBlock, Date.now(), BLOCK_TIME_MS, store.getState().tokens)
+            if (trades.length === 0) return
+            store.getState().mergeRecentTrades(trades)
+            queueMarketRefresh(client, [...new Map(trades.map((trade) => [trade.token.toLowerCase(), trade.token])).values()])
           },
           onError: reconnect,
         })
@@ -156,20 +316,24 @@ export function useTokenDiscovery() {
               lastSelectedRefresh = now
               const selected = store.getState().selectedToken
               if (isAddress(selected)) {
-                void updateMarket(client, selected).then((market) => {
+                void updateSelectedMarket(client, selected).then((market) => {
                   store.getState().addPricePoint({ time: now, price: market.price })
                 }).catch(() => undefined)
               }
             }
-            if (now - lastMarketSync >= 60_000) {
-              lastMarketSync = now
-              void syncMarkets()
+            if (now - lastActivitySync >= 60_000) {
+              const full = lastActivitySync === 0
+              lastActivitySync = now
+              void syncActivity(client, full)
             }
           },
           onError: reconnect,
         })
         cleanups.push(unwatchHub, unwatchBlocks)
-        void syncMarkets()
+        if (lastActivitySync === 0) {
+          lastActivitySync = Date.now()
+          void syncActivity(client, true)
+        }
       } catch {
         reconnect()
       }
@@ -181,6 +345,10 @@ export function useTokenDiscovery() {
       cleanups.forEach((cleanup) => cleanup())
       if (reconnectTimer.current) window.clearTimeout(reconnectTimer.current)
       reconnectTimer.current = null
+      if (marketFlushTimer !== null) window.clearTimeout(marketFlushTimer)
+      marketFlushTimer = null
+      if (activityRetryTimer !== null) window.clearTimeout(activityRetryTimer)
+      activityRetryTimer = null
     }
   }, [])
 }

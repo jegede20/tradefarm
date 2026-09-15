@@ -5,6 +5,8 @@ import type { LogLevel, RecentTrade, Token } from '@/types/trading'
 export interface TradePlan {
   size: number
   priceImpactPct: number
+  exitPriceImpactPct: number
+  estimatedExitUSDC: number
 }
 
 export interface LiquidityLockSnapshot {
@@ -48,16 +50,30 @@ export function buildSafeTradePlan(
   maxLiquiditySharePct: number,
   maxPriceImpactPct: number,
 ): TradePlan | null {
-  const size = Math.min(requestedSize, market.reserve * maxLiquiditySharePct / 100)
-  if (size < 100 || market.price <= 0 || market.reserve <= 0 || market.poolTokenReserve <= 0) return null
+  const size = Math.floor(Math.min(requestedSize, market.reserve * maxLiquiditySharePct / 100) * 100) / 100
+  if (size < 100 || market.price <= 0 || market.reserve <= 0 || market.poolTokenReserve <= 0 || maxPriceImpactPct <= 0) return null
 
-  // Mirrors the conservative 1% pool input adjustment used by live quoting.
-  const adjusted = size * 0.99
-  const quotedTokens = adjusted * market.poolTokenReserve / (market.reserve + adjusted)
+  // Mirror the pair's conservative 1% input adjustment in both directions.
+  // The second leg proves that the complete intended position can be quoted
+  // back out against post-entry reserves, replacing a fixed token-supply proxy.
+  const adjustedUSDCIn = size * 0.99
+  const quotedTokens = adjustedUSDCIn * market.poolTokenReserve / (market.reserve + adjustedUSDCIn)
   const idealTokens = size / market.price
   const priceImpactPct = idealTokens > 0 ? Math.max(0, (1 - quotedTokens / idealTokens) * 100) : 100
-  if (priceImpactPct > maxPriceImpactPct) return null
-  return { size: Math.floor(size * 100) / 100, priceImpactPct }
+  const postUSDCReserve = market.reserve + adjustedUSDCIn
+  const postTokenReserve = market.poolTokenReserve - quotedTokens
+  const adjustedTokenIn = quotedTokens * 0.99
+  const estimatedExitUSDC = postTokenReserve > 0
+    ? adjustedTokenIn * postUSDCReserve / (postTokenReserve + adjustedTokenIn)
+    : 0
+  const postEntrySpot = postTokenReserve > 0 ? postUSDCReserve / postTokenReserve : 0
+  const idealExitUSDC = quotedTokens * postEntrySpot
+  const exitPriceImpactPct = idealExitUSDC > 0
+    ? Math.max(0, (1 - estimatedExitUSDC / idealExitUSDC) * 100)
+    : 100
+  if (!Number.isFinite(priceImpactPct) || !Number.isFinite(exitPriceImpactPct)
+    || priceImpactPct > maxPriceImpactPct || exitPriceImpactPct > maxPriceImpactPct) return null
+  return { size, priceImpactPct, exitPriceImpactPct, estimatedExitUSDC }
 }
 
 export async function validateGraduatedPoolSafety(
@@ -132,9 +148,19 @@ export async function scanBestToken({
   cooldownTokens: Map<string, number>
   log: (level: LogLevel, message: string) => void
 }) {
-  // Synced snapshots avoid one RPC reserve request per candidate. Only the
-  // final short list receives an on-chain LP self-lock check.
-  const marketsToReview = markets.slice(0, 32)
+  // Rank the synchronized universe by actual rolling activity before applying
+  // quality gates. This prevents creation-order seeds from monopolizing every
+  // scan while older, actively traded pools remain unseen.
+  const cutoff = Date.now() - 10 * 60_000
+  const recentActivity = new Map<string, number>()
+  for (const trade of recentTrades) {
+    if (trade.timestamp < cutoff) continue
+    const key = trade.token.toLowerCase()
+    recentActivity.set(key, (recentActivity.get(key) ?? 0) + 1)
+  }
+  const marketsToReview = [...markets]
+    .sort((left, right) => (recentActivity.get(right.address.toLowerCase()) ?? 0) - (recentActivity.get(left.address.toLowerCase()) ?? 0) || right.reserve - left.reserve)
+    .slice(0, 64)
   const candidates: Candidate[] = []
   const rejected = { cooldown: 0, liquidity: 0, activity: 0, pressure: 0, concentration: 0, volatility: 0, impact: 0, depth: 0, warmup: 0 }
   const rejectionDetails: string[] = []
@@ -142,8 +168,7 @@ export async function scanBestToken({
     rejected[category] += 1
     rejectionDetails.push(`${market.symbol}: ${reason}`)
   }
-  const cutoff = Date.now() - 10 * 60_000
-  log('SCAN', `Quality scan · ${marketsToReview.length} graduated-pool snapshots`)
+  log('SCAN', `Quality scan · ${marketsToReview.length}/${markets.length} pool snapshots · ${recentActivity.size} active tokens indexed`)
 
   for (const market of marketsToReview) {
     if (!market.graduated || market.poolTokenReserve <= 0 || market.supply <= 0) {
@@ -151,7 +176,11 @@ export async function scanBestToken({
       continue
     }
     const key = market.address.toLowerCase()
-    const history = [...(signalHistory.get(key) ?? []), market.price].slice(-6)
+    const tokenTrades = recentTrades.filter((trade) => trade.timestamp >= cutoff && trade.token.toLowerCase() === key)
+    const priorHistory = signalHistory.get(key) ?? []
+    // Hub events carry impact-sensitive average execution prices. Momentum must
+    // be built only from reserve snapshots so trade size cannot fake a move.
+    const history = [...priorHistory, market.price].slice(-6)
     signalHistory.set(key, history)
 
     const cooldown = cooldownTokens.get(key) ?? 0
@@ -166,16 +195,11 @@ export async function scanBestToken({
     }
 
     const poolTokenSharePct = market.poolTokenReserve / market.supply * 100
-    if (poolTokenSharePct < 5) {
-      reject(market, `${poolTokenSharePct.toFixed(1)}% token-side supply below 5%`, 'depth')
-      continue
-    }
     if (history.length < 2) {
       reject(market, 'warming up signal history (1/2)', 'warmup')
       continue
     }
 
-    const tokenTrades = recentTrades.filter((trade) => trade.timestamp >= cutoff && trade.token.toLowerCase() === key)
     const uniqueTraders = new Set(tokenTrades.map((trade) => trade.wallet.toLowerCase())).size
     if (tokenTrades.length < minRecentTrades || uniqueTraders < 2) {
       reject(market, `${tokenTrades.length}/${minRecentTrades} recent trades · ${uniqueTraders}/2 wallets`, 'activity')
@@ -217,7 +241,7 @@ export async function scanBestToken({
 
     const plan = buildSafeTradePlan(market, requestedSize, maxLiquiditySharePct, maxPriceImpactPct)
     if (!plan) {
-      reject(market, 'requested entry exceeds size or impact limits', 'impact')
+      reject(market, 'intended entry or full-position exit exceeds configured size/impact limits', 'impact')
       continue
     }
 
@@ -227,9 +251,10 @@ export async function scanBestToken({
     const momentumScore = momentumPct >= 0
       ? clamp(18 - Math.abs(momentumPct - 1.5) * 2.5, 3, 18)
       : clamp(8 + momentumPct * 5, 0, 8)
-    const depthScore = clamp(poolTokenSharePct / 5, 0, 10)
-    const impactScore = clamp(10 - plan.priceImpactPct / maxPriceImpactPct * 10, 0, 10)
-    const score = clamp(liquidityScore + activityScore + pressureScore + momentumScore + depthScore + impactScore, 0, 100)
+    const worstImpactPct = Math.max(plan.priceImpactPct, plan.exitPriceImpactPct)
+    const depthScore = clamp(10 - worstImpactPct / maxPriceImpactPct * 10, 0, 10)
+    const reserveDiversityScore = clamp(poolTokenSharePct / 10, 0, 5)
+    const score = clamp(liquidityScore + activityScore + pressureScore + momentumScore + depthScore + reserveDiversityScore, 0, 100)
 
     candidates.push({
       address: market.address,
@@ -249,7 +274,11 @@ export async function scanBestToken({
     })
   }
 
-  if (rejectionDetails.length > 0) log('SCAN', `Rejected · ${rejectionDetails.join(' | ')}`)
+  if (rejectionDetails.length > 0) {
+    const shown = rejectionDetails.slice(0, 12)
+    const remainder = rejectionDetails.length - shown.length
+    log('SCAN', `Rejected · ${shown.join(' | ')}${remainder > 0 ? ` | +${remainder} more (see gate summary)` : ''}`)
+  }
   candidates.sort((left, right) => right.score - left.score)
   let best: ScannedToken | null = null
   for (const candidate of candidates.slice(0, 5)) {
@@ -273,6 +302,7 @@ export async function scanBestToken({
   if (best) {
     log('SCAN', `Selected ${best.market.symbol} · quality ${best.score.toFixed(0)}/100 · LP lock ${best.liquidityLockPct.toFixed(1)}% · creator ${best.creatorHoldingPct.toFixed(1)}%`)
     log('SCAN', `Signals · ${best.recentTradeCount} trades / ${best.uniqueTraders} wallets · buys ${best.buyPressurePct.toFixed(0)}% · largest flow ${best.largestWalletFlowPct.toFixed(0)}% · momentum ${best.momentumPct >= 0 ? '+' : ''}${best.momentumPct.toFixed(2)}%`)
+    log('SCAN', `Executable depth · entry ${best.plan.priceImpactPct.toFixed(2)}% · full-position exit ${best.plan.exitPriceImpactPct.toFixed(2)}% estimated impact`)
   } else {
     const summary = Object.entries(rejected).filter(([, count]) => count > 0).map(([reason, count]) => `${reason} ${count}`).join(' · ')
     log('WAIT', `No pool passed the quality gate${summary ? ` · ${summary}` : ''}`)
