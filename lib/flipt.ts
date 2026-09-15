@@ -3,7 +3,7 @@ import { ERC20_ABI, MULTICALL3_ADDRESS, PAIR_ABI, ROUTER_ABI, ROUTER_ADDRESS, TO
 import type { Token } from '@/types/trading'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
-const POOL_FEE_BPS = 100n // Successful Flipt pool swaps price with a 1% input adjustment.
+const POOL_FEE_BPS = 100n // Buys adjust USDC input; sells pay 99% of gross USDC output.
 
 export function isZeroAddress(address?: string) {
   return !address || address.toLowerCase() === ZERO_ADDRESS
@@ -204,6 +204,13 @@ export async function getPairQuote(
   const reserveIn = isBuy ? reserveUsdc : reserveToken
   const reserveOut = isBuy ? reserveToken : reserveUsdc
   if (amountIn <= 0n || reserveIn <= 0n || reserveOut <= 0n) return 0n
-  const adjusted = amountIn * (10_000n - POOL_FEE_BPS) / 10_000n
-  return adjusted * reserveOut / (reserveIn + adjusted)
+  if (isBuy) {
+    const adjusted = amountIn * (10_000n - POOL_FEE_BPS) / 10_000n
+    return adjusted * reserveOut / (reserveIn + adjusted)
+  }
+
+  // Verified Flipt sell receipts show that the complete token input moves the
+  // pair invariant, then the seller receives 99% of the gross USDC output.
+  const grossOut = amountIn * reserveOut / (reserveIn + amountIn)
+  return grossOut * (10_000n - POOL_FEE_BPS) / 10_000n
 }

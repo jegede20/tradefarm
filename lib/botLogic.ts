@@ -45,6 +45,75 @@ export interface ScannedToken {
 interface Candidate extends Omit<ScannedToken, 'liquidityLockPct' | 'creatorHoldingPct'> {}
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+const RECENT_SELL_SHOCK_WINDOW_MS = 2 * 60_000
+
+export interface RecentSellShock {
+  largestSellTokens: number
+  largestSellUSDC: number
+  poolTokenSharePct: number
+  stressedExitUSDC: number
+  stressedLossPct: number
+}
+
+function constantProductOut(amountIn: number, reserveIn: number, reserveOut: number, inputMultiplier = 0.99) {
+  if (amountIn <= 0 || reserveIn <= 0 || reserveOut <= 0) return 0
+  const adjustedIn = amountIn * inputMultiplier
+  return adjustedIn * reserveOut / (reserveIn + adjustedIn)
+}
+
+/**
+ * Model the bot's complete entry/exit after a repeat of the largest verified
+ * sell seen in the short flow window. Recent sell volume proves that swaps can
+ * execute, but a large seller is also adverse inventory that can move the pool
+ * before the bot exits. Profit mode must account for both facts.
+ */
+export function assessRecentSellShock(
+  market: Token,
+  plan: TradePlan,
+  tokenTrades: RecentTrade[],
+  now = Date.now(),
+): RecentSellShock | null {
+  const recentSells = tokenTrades.filter((trade) => trade.type === 'SELL'
+    && trade.timestamp >= now - RECENT_SELL_SHOCK_WINDOW_MS
+    && Number.isFinite(trade.amount)
+    && trade.amount > 0)
+  if (recentSells.length === 0) return null
+
+  const largest = recentSells.reduce((current, trade) => trade.amount > current.amount ? trade : current)
+  const botTokens = constantProductOut(plan.size, market.reserve, market.poolTokenReserve)
+  if (botTokens <= 0) return null
+
+  // Flipt's buy path leaves the 1%-adjusted USDC input in the pair. Token
+  // inputs are transferred into the pair before the sell output is paid.
+  const postEntryUSDC = market.reserve + plan.size * 0.99
+  const postEntryTokens = market.poolTokenReserve - botTokens
+  // Flipt sells move the invariant with the complete token input, then pay the
+  // trader 99% of the gross USDC output. Pool reserves therefore lose the
+  // gross output even though the wallet receives the fee-adjusted amount.
+  const shockGrossUSDCOut = constantProductOut(largest.amount, postEntryTokens, postEntryUSDC, 1)
+  const postShockUSDC = Math.max(0, postEntryUSDC - shockGrossUSDCOut)
+  const postShockTokens = postEntryTokens + largest.amount
+  const stressedExitGrossUSDC = constantProductOut(botTokens, postShockTokens, postShockUSDC, 1)
+  const stressedExitUSDC = stressedExitGrossUSDC * 0.99
+  const stressedLossPct = plan.size > 0 ? Math.max(0, (1 - stressedExitUSDC / plan.size) * 100) : 100
+
+  return {
+    largestSellTokens: largest.amount,
+    largestSellUSDC: largest.amount * largest.price,
+    poolTokenSharePct: market.poolTokenReserve > 0 ? largest.amount / market.poolTokenReserve * 100 : 100,
+    stressedExitUSDC,
+    stressedLossPct,
+  }
+}
+
+export function getExecutionPriceMovePct(scoredPrice: number, livePrice: number) {
+  return scoredPrice > 0 && Number.isFinite(livePrice) ? (livePrice - scoredPrice) / scoredPrice * 100 : Number.NaN
+}
+
+export function getMaximumExecutionMovePct(strategyMode: 'profit' | 'rank', maxPriceImpactPct: number) {
+  const configured = Math.max(0.25, maxPriceImpactPct)
+  return strategyMode === 'profit' ? Math.min(1, configured) : Math.min(2, configured)
+}
 
 export function getMinimumOut(expectedOut: bigint, slippagePct: number) {
   const bps = BigInt(Math.max(0, 10_000 - Math.round(slippagePct * 100)))
@@ -60,19 +129,22 @@ export function buildSafeTradePlan(
   const size = Math.floor(Math.min(requestedSize, market.reserve * maxLiquiditySharePct / 100) * 100) / 100
   if (size < 100 || market.price <= 0 || market.reserve <= 0 || market.poolTokenReserve <= 0 || maxPriceImpactPct <= 0) return null
 
-  // Mirror the pair's conservative 1% input adjustment in both directions.
-  // The second leg proves that the complete intended position can be quoted
-  // back out against post-entry reserves, replacing a fixed token-supply proxy.
+  // Mirror Flipt's verified fee direction: buys use 99% of USDC input for the
+  // invariant; sells pay the wallet 99% of gross USDC output. The second leg
+  // proves that the complete intended position can be quoted back out against
+  // post-entry reserves, replacing a fixed token-supply proxy.
   const adjustedUSDCIn = size * 0.99
   const quotedTokens = adjustedUSDCIn * market.poolTokenReserve / (market.reserve + adjustedUSDCIn)
   const idealTokens = size / market.price
   const priceImpactPct = idealTokens > 0 ? Math.max(0, (1 - quotedTokens / idealTokens) * 100) : 100
   const postUSDCReserve = market.reserve + adjustedUSDCIn
   const postTokenReserve = market.poolTokenReserve - quotedTokens
-  const adjustedTokenIn = quotedTokens * 0.99
-  const estimatedExitUSDC = postTokenReserve > 0
-    ? adjustedTokenIn * postUSDCReserve / (postTokenReserve + adjustedTokenIn)
+  // Verified Flipt sells use the full token input for the invariant and pay
+  // 99% of gross USDC output to the seller.
+  const grossExitUSDC = postTokenReserve > 0
+    ? quotedTokens * postUSDCReserve / (postTokenReserve + quotedTokens)
     : 0
+  const estimatedExitUSDC = grossExitUSDC * 0.99
   const postEntrySpot = postTokenReserve > 0 ? postUSDCReserve / postTokenReserve : 0
   const idealExitUSDC = quotedTokens * postEntrySpot
   const exitPriceImpactPct = idealExitUSDC > 0
@@ -134,6 +206,7 @@ export async function scanBestToken({
   maxVolatilityPct,
   maxLiquiditySharePct,
   maxPriceImpactPct,
+  stopLossPct,
   signalHistory,
   liquidityLocks,
   cooldownTokens,
@@ -156,6 +229,7 @@ export async function scanBestToken({
   maxVolatilityPct: number
   maxLiquiditySharePct: number
   maxPriceImpactPct: number
+  stopLossPct: number
   signalHistory: Map<string, MarketSignalPoint[]>
   liquidityLocks: Map<string, LiquidityLockSnapshot>
   cooldownTokens: Map<string, number>
@@ -175,7 +249,7 @@ export async function scanBestToken({
     .sort((left, right) => (recentActivity.get(right.address.toLowerCase()) ?? 0) - (recentActivity.get(left.address.toLowerCase()) ?? 0) || right.reserve - left.reserve)
     .slice(0, 64)
   const candidates: Candidate[] = []
-  const rejected = { cooldown: 0, liquidity: 0, activity: 0, pressure: 0, concentration: 0, volatility: 0, impact: 0, depth: 0, warmup: 0 }
+  const rejected = { cooldown: 0, liquidity: 0, activity: 0, pressure: 0, concentration: 0, volatility: 0, impact: 0, depth: 0, shock: 0, warmup: 0 }
   const rejectionDetails: string[] = []
   const reject = (market: Token, reason: string, category: keyof typeof rejected) => {
     rejected[category] += 1
@@ -268,6 +342,15 @@ export async function scanBestToken({
     const plan = buildSafeTradePlan(market, requestedSize, maxLiquiditySharePct, maxPriceImpactPct)
     if (!plan) {
       reject(market, 'intended entry or full-position exit exceeds configured size/impact limits', 'impact')
+      continue
+    }
+    const sellShock = assessRecentSellShock(market, plan, tokenTrades)
+    if (strategyMode === 'profit' && sellShock && sellShock.stressedLossPct > stopLossPct) {
+      reject(
+        market,
+        `recent sell shock stress -${sellShock.stressedLossPct.toFixed(2)}% exceeds ${stopLossPct.toFixed(2)}% stop-loss · ${sellShock.largestSellUSDC.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC / ${sellShock.poolTokenSharePct.toFixed(1)}% of pool tokens`,
+        'shock',
+      )
       continue
     }
     const minimumRankTurnover = Math.min(requestedSize * 0.1, 2_500)

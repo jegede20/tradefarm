@@ -5,7 +5,17 @@ import { formatUnits, isAddress, parseUnits, type Address } from 'viem'
 import { useAccount, usePublicClient } from 'wagmi'
 import { ERC20_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from '@/lib/contracts'
 import { friendlyContractError, getMarketSnapshot, getPairQuote } from '@/lib/flipt'
-import { buildSafeTradePlan, scanBestToken, validateGraduatedPoolSafety, type LiquidityLockSnapshot, type MarketSignalPoint } from '@/lib/botLogic'
+import {
+  assessRecentSellShock,
+  buildSafeTradePlan,
+  getExecutionPriceMovePct,
+  getMaximumExecutionMovePct,
+  scanBestToken,
+  validateGraduatedPoolSafety,
+  type LiquidityLockSnapshot,
+  type MarketSignalPoint,
+  type ScannedToken,
+} from '@/lib/botLogic'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { useExecuteTrade } from './useExecuteTrade'
 import type { LogLevel } from '@/types/trading'
@@ -57,7 +67,10 @@ export function useBotRunner() {
 
     runningLoop.current = true
     const config = before.botConfig
-    let nextDelay = config.delaySeconds * 1_000
+    // Market scans respect the configured cadence, while an owned position is
+    // repriced frequently enough for the stop-loss to react to Arc's subsecond
+    // blocks instead of waiting a full scan interval.
+    let nextDelay = before.botPosition ? Math.min(config.delaySeconds * 1_000, 3_000) : config.delaySeconds * 1_000
     let transientFailure = false
 
     try {
@@ -222,6 +235,7 @@ export function useBotRunner() {
       let pairAddress: Address
       let symbol: string
       let actualTradeSize: number
+      let selectedCandidate: ScannedToken | null = null
 
       if (config.mode === 'auto') {
         const scan = await scanBestToken({
@@ -242,6 +256,7 @@ export function useBotRunner() {
           maxVolatilityPct: config.maxVolatilityPct,
           maxLiquiditySharePct: config.maxLiquiditySharePct,
           maxPriceImpactPct: config.maxPriceImpactPct,
+          stopLossPct: config.stopLossPct,
           signalHistory: signalHistory.current,
           liquidityLocks: liquidityLocks.current,
           cooldownTokens: cooldownTokens.current,
@@ -249,6 +264,7 @@ export function useBotRunner() {
         })
         useTradeFarmStore.getState().setBotTokensScanned(useTradeFarmStore.getState().botTokensScanned + scan.scanned)
         if (!scan.best) return
+        selectedCandidate = scan.best
         tokenAddress = scan.best.address
         pairAddress = scan.best.pair
         symbol = scan.best.market.symbol
@@ -286,14 +302,47 @@ export function useBotRunner() {
 
       const latestKnownMarket = useTradeFarmStore.getState().tokens.find((market) => market.address.toLowerCase() === tokenAddress.toLowerCase())
       const executionMarket = await getMarketSnapshot(publicClient, tokenAddress, pairAddress, latestKnownMarket)
+      useTradeFarmStore.getState().upsertToken(executionMarket)
+      pairAddress = executionMarket.pair
+
+      if (selectedCandidate) {
+        const sampledAt = Date.now()
+        const key = tokenAddress.toLowerCase()
+        const freshHistory = [...(signalHistory.current.get(key) ?? []), { price: executionMarket.price, timestamp: sampledAt }]
+          .filter((point) => sampledAt - point.timestamp <= 5 * 60_000)
+          .slice(-12)
+        signalHistory.current.set(key, freshHistory)
+
+        const movePct = getExecutionPriceMovePct(selectedCandidate.market.price, executionMarket.price)
+        const maximumMovePct = getMaximumExecutionMovePct(config.strategyMode, config.maxPriceImpactPct)
+        if (!Number.isFinite(movePct) || Math.abs(movePct) > maximumMovePct) {
+          cooldownTokens.current.set(key, 2)
+          log('WAIT', `${symbol} live preflight cancelled · price moved ${Number.isFinite(movePct) ? `${movePct >= 0 ? '+' : ''}${movePct.toFixed(2)}%` : 'unreliably'} since scoring (maximum ±${maximumMovePct.toFixed(2)}%).`)
+          return
+        }
+      }
+
       const executionPlan = buildSafeTradePlan(executionMarket, actualTradeSize, config.maxLiquiditySharePct, config.maxPriceImpactPct)
       if (!executionPlan) {
         log('WAIT', `${symbol} reserves changed before execution; entry cancelled by the live entry/exit depth check.`)
         return
       }
-      useTradeFarmStore.getState().upsertToken(executionMarket)
-      pairAddress = executionMarket.pair
+
+      if (selectedCandidate && config.strategyMode === 'profit') {
+        const cutoff = Date.now() - 10 * 60_000
+        const liveTokenTrades = useTradeFarmStore.getState().recentTrades.filter((trade) => trade.timestamp >= cutoff
+          && trade.token.toLowerCase() === tokenAddress.toLowerCase())
+        const sellShock = assessRecentSellShock(executionMarket, executionPlan, liveTokenTrades)
+        if (sellShock && sellShock.stressedLossPct > config.stopLossPct) {
+          cooldownTokens.current.set(tokenAddress.toLowerCase(), 2)
+          log('WAIT', `${symbol} live preflight cancelled · recent ${sellShock.largestSellUSDC.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC sell stress projects -${sellShock.stressedLossPct.toFixed(2)}%, beyond the ${config.stopLossPct.toFixed(2)}% stop-loss.`)
+          return
+        }
+      }
+
       actualTradeSize = executionPlan.size
+      const liveMovePct = selectedCandidate ? getExecutionPriceMovePct(selectedCandidate.market.price, executionMarket.price) : 0
+      log('SCAN', `Live preflight · ${symbol} · move ${liveMovePct >= 0 ? '+' : ''}${liveMovePct.toFixed(2)}% · entry ${executionPlan.priceImpactPct.toFixed(2)}% / exit ${executionPlan.exitPriceImpactPct.toFixed(2)}% · round-trip ${(executionPlan.size - executionPlan.estimatedExitUSDC).toFixed(2)} USDC`)
       if (actualTradeSize < config.tradeSize) log('INFO', `Trade size capped to ${actualTradeSize.toLocaleString()} USDC by balance/liquidity guardrails.`)
       if (config.strategyMode === 'rank') {
         log('INFO', `Rank-volume estimate · ${(actualTradeSize + executionPlan.estimatedExitUSDC).toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC volume · ${(actualTradeSize - executionPlan.estimatedExitUSDC).toFixed(2)} USDC round-trip cost before slippage.`)
@@ -325,6 +374,7 @@ export function useBotRunner() {
       })
       log('BUY', `Confirmed · block ${result.receipt.blockNumber.toString()} · ${result.transferLogs} transfers`)
       log('INFO', `Opened ${symbol} · ${tokenAmount.toLocaleString('en-US', { maximumFractionDigits: 4 })} tokens @ ${entryPrice.toFixed(8)} USDC`)
+      nextDelay = Math.min(config.delaySeconds * 1_000, 3_000)
     } catch (cause) {
       if (useTradeFarmStore.getState().botStatus !== 'running') return
       if (isTransientRpcFailure(cause)) {
