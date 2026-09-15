@@ -8,7 +8,7 @@ import { BottomTicker } from '@/components/layout/BottomTicker'
 
 export const metadata: Metadata = {
   title: 'TradeFarm — Arc Testnet Trading Terminal',
-  description: 'High-speed bonding curve trading terminal for Arc Testnet.',
+  description: 'High-speed graduated Flipt pool trading terminal for Arc Testnet.',
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -63,6 +63,16 @@ export function BotControls() {
       </div>
 
       <div className="space-y-5 p-5">
+        {position && (
+          <div className={cn('rounded-md border p-4', running ? 'border-accent-primary/30 bg-accent-primary/5' : 'border-warning/30 bg-warning/5')}>
+            <div className="flex items-center justify-between gap-3"><span className="panel-title">Current position</span><span className={cn('flex items-center gap-1 text-right font-mono text-[8px]', running ? 'text-success' : 'text-warning')}><span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', running ? 'animate-pulse-dot bg-success' : 'bg-warning')} /> {running ? 'MONITORING' : 'UNMANAGED · START TO RESUME'}</span></div>
+            <div className="mt-3 flex items-center gap-2"><TokenBadge symbol={position.symbol} /><div><p className="text-sm font-semibold">{position.symbol}</p><p className="font-mono text-[9px] text-text-secondary">{position.amount.toLocaleString('en-US', { maximumFractionDigits: 4 })} tokens</p></div></div>
+            <div className="mt-4 grid grid-cols-3 gap-3"><Metric label="Entry" value={`$${position.entryPrice.toFixed(6)}`} /><Metric label="Current" value={`$${position.currentPrice.toFixed(6)}`} /><div><p className="data-label">Net PnL</p><PnLDisplay value={((position.currentPrice * position.amount - position.entryUSDC) / position.entryUSDC) * 100} percent className="mt-1 block text-xs" /></div></div>
+            <div className="mt-3 grid grid-cols-3 gap-3 border-t border-border/60 pt-3"><Metric label="Peak" value={`${position.peakPnlPct.toFixed(2)}%`} /><Metric label="Held" value={formatDuration(Math.floor((Date.now() - position.openedAt) / 1_000))} /><Metric label="Stagnant" value={`${position.stagnantChecks}/${config.stagnantChecksLimit}`} /></div>
+            {!running && <button type="button" onClick={startBot} disabled={!isConnected} className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-md bg-warning/15 text-[10px] font-bold uppercase tracking-wider text-warning transition hover:bg-warning/25 disabled:cursor-not-allowed disabled:opacity-40"><Icon name="power" className="h-3.5 w-3.5" /> Resume position management</button>}
+          </div>
+        )}
+
         <fieldset disabled={running} className="space-y-5 disabled:opacity-60">
           <ConfigSection title="Execution">
             <div>
@@ -122,25 +132,16 @@ export function BotControls() {
         </fieldset>
 
         <div className="grid grid-cols-2 gap-3 border-t border-border pt-5">
-          <button type="button" onClick={startBot} disabled={!isConnected || running || balanceTooLow} className="flex h-11 items-center justify-center gap-2 rounded-md bg-success text-xs font-bold uppercase tracking-wider text-white transition hover:bg-green-400 disabled:cursor-not-allowed disabled:opacity-30"><Icon name="power" className="h-3.5 w-3.5" /> Start bot</button>
+          <button type="button" onClick={startBot} disabled={!isConnected || running || (balanceTooLow && !position)} className="flex h-11 items-center justify-center gap-2 rounded-md bg-success text-xs font-bold uppercase tracking-wider text-white transition hover:bg-green-400 disabled:cursor-not-allowed disabled:opacity-30"><Icon name="power" className="h-3.5 w-3.5" /> Start bot</button>
           <button type="button" onClick={stopBot} disabled={!running} className="flex h-11 items-center justify-center gap-2 rounded-md bg-danger text-xs font-bold uppercase tracking-wider text-white transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-30"><span className="h-2.5 w-2.5 rounded-[2px] bg-white" /> Stop bot</button>
         </div>
         {!isConnected && <p className="text-center text-[10px] text-warning">Connect a wallet on Arc Testnet to enable execution.</p>}
-        {isConnected && balanceTooLow && <p className="text-center text-[10px] text-warning">At least 100 Flipt USDC is required.</p>}
-        {isConnected && availableUsdc !== null && availableUsdc >= 100 && availableUsdc < config.tradeSize && (
+        {isConnected && balanceTooLow && !position && <p className="text-center text-[10px] text-warning">At least 100 Flipt USDC is required to open a new position.</p>}
+        {isConnected && !position && availableUsdc !== null && availableUsdc >= 100 && availableUsdc < config.tradeSize && (
           <p className="rounded-md border border-warning/25 bg-warning/5 px-3 py-2 font-mono text-[10px] leading-relaxed text-warning">Requested size exceeds balance. Execution will cap each entry to the safe available amount.</p>
         )}
 
-        {running && position && (
-          <div className="rounded-md border border-accent-primary/30 bg-accent-primary/5 p-4">
-            <div className="flex items-center justify-between"><span className="panel-title">Current position</span><span className="flex items-center gap-1 font-mono text-[8px] text-success"><span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-success" /> MONITORING</span></div>
-            <div className="mt-3 flex items-center gap-2"><TokenBadge symbol={position.symbol} /><div><p className="text-sm font-semibold">{position.symbol}</p><p className="font-mono text-[9px] text-text-secondary">{position.amount.toLocaleString('en-US', { maximumFractionDigits: 4 })} tokens</p></div></div>
-            <div className="mt-4 grid grid-cols-3 gap-3"><Metric label="Entry" value={`$${position.entryPrice.toFixed(6)}`} /><Metric label="Current" value={`$${position.currentPrice.toFixed(6)}`} /><div><p className="data-label">Net PnL</p><PnLDisplay value={((position.currentPrice * position.amount - position.entryUSDC) / position.entryUSDC) * 100} percent className="mt-1 block text-xs" /></div></div>
-            <div className="mt-3 grid grid-cols-3 gap-3 border-t border-border/60 pt-3"><Metric label="Peak" value={`${position.peakPnlPct.toFixed(2)}%`} /><Metric label="Held" value={formatDuration(Math.floor((Date.now() - position.openedAt) / 1_000))} /><Metric label="Stagnant" value={`${position.stagnantChecks}/${config.stagnantChecksLimit}`} /></div>
-          </div>
-        )}
-
-        {running && (
+        {(running || sessionStartedAt !== null) && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <MetricCard label="Est. rank" value={leaderboardRank ? `#${leaderboardRank}` : '>50'} />
             <MetricCard label="Realized PnL" value={`${realizedPnl >= 0 ? '+' : ''}${realizedPnl.toFixed(2)}`} tone={realizedPnl >= 0 ? 'positive' : 'negative'} />
@@ -150,7 +151,7 @@ export function BotControls() {
             <MetricCard label="Elapsed / losses" value={`${formatDuration(elapsed)} · ${consecutiveLosses}`} />
           </div>
         )}
-        {running && <p className="font-mono text-[8px] text-text-secondary">{scanned.toLocaleString()} pool observations · leaderboard {leaderboardLoading ? 'syncing' : leaderboardSource}</p>}
+        {(running || sessionStartedAt !== null) && <p className="font-mono text-[8px] text-text-secondary">{scanned.toLocaleString()} pool observations · leaderboard {leaderboardLoading ? 'syncing' : leaderboardSource}</p>}
       </div>
     </section>
   )

@@ -27,10 +27,10 @@ export function BotRunnerProvider({ children }: { children: ReactNode }) {
   const leaderboard = useLeaderboard(status === 'running' || pathname === '/bot')
 
   const observedRank = useMemo(() => {
-    if (!address) return null
+    if (!address || leaderboard.source !== 'live') return null
     const index = leaderboard.rows.findIndex((row) => row.wallet.toLowerCase() === address.toLowerCase())
     return index >= 0 ? index + 1 : null
-  }, [address, leaderboard.rows])
+  }, [address, leaderboard.rows, leaderboard.source])
 
   useEffect(() => {
     setLeaderboardRank(observedRank)

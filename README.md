@@ -47,14 +47,14 @@ Contract safeguards:
 - Approval receipts are awaited before trade submission.
 - Trade receipts are awaited before local state changes.
 - Pool buys are accepted into local state only when the receipt contains exactly four ERC-20 `Transfer` logs.
-- Confirmed wallet balance deltas, rather than pre-trade quote estimates, populate purchased and received amounts.
+- Confirmed receipt `Transfer` logs, rather than pre-trade quote estimates, populate purchased and received amounts.
 - Trade history and an open bot position are persisted in browser localStorage.
 
 ## Live market runtime
 
 `useTokenDiscovery` subscribes to raw Flipt Hub events over Arc WebSocket, resolves the transaction selector and token address, reads pool reserves, and updates the ticker, chart, and trade feed. It refreshes the selected pool every few seconds, syncs recent pools in bounded batches, and reconnects with exponential backoff.
 
-The bounded scan is intentional: the live Hub contains more than twenty thousand pairs, so sending one browser RPC request per historical pair every loop would freeze mobile wallets and overload the public endpoint.
+The bounded scan is intentional: the live Hub contains more than twenty thousand pairs, so sending one browser RPC request per historical pair every loop would freeze mobile wallets and overload the public endpoint. The leaderboard similarly reads bounded 512-block windows, pairs verified Hub buy/sell events with their exact USDC `Transfer` logs, and stops after at most 500 matched trades; this stays below Arc RPC's result ceiling.
 
 ## Bot
 
@@ -64,7 +64,7 @@ Auto mode evaluates recent graduated pools with at least 1,000 USDC liquidity an
 
 Each session can target a recent-transfer leaderboard rank or realized-USDC profit. Reach mode stops at the objective; Defend mode pauses new entries while the estimated rank holds and resumes if it slips. The leaderboard rank is a clearly labeled TradeFarm estimate derived from recent router-linked Flipt USDC transfers, not an official final Flipt rank.
 
-Position exits include take profit, stop loss, trailing stop, maximum hold time, stagnation, deadline, objective completion, and projected session drawdown. Session protections include maximum realized loss and a consecutive-loss circuit breaker. The scheduler never waits beyond the configured hold deadline even when the normal quote interval is longer.
+Position exits include take profit, stop loss, trailing stop, maximum hold time, stagnation, deadline, objective completion, and projected session drawdown. Session protections include maximum realized loss and a consecutive-loss circuit breaker. The scheduler never waits beyond the configured hold deadline even when the normal quote interval is longer. Transient Arc RPC failures now use exponential retries without abandoning an open position; submitted approval and trade hashes retry the same receipt before any failure is surfaced.
 
 Stopping the bot prevents new actions but does not submit a sell merely because the user pressed Stop. Any already submitted wallet request is allowed to settle, and the open position remains available to resume or sell manually.
 

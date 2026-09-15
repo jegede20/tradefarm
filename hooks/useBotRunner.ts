@@ -10,6 +10,11 @@ import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { useExecuteTrade } from './useExecuteTrade'
 import type { LogLevel } from '@/types/trading'
 
+function isTransientRpcFailure(cause: unknown) {
+  const message = cause instanceof Error ? cause.message : String(cause)
+  return /http request failed|failed to fetch|fetch failed|network error|timeout|timed out|socket|429|rate.?limit|limit exceeded|econn|temporarily unavailable/i.test(message)
+}
+
 export function useBotRunner() {
   const { address, isConnected, chainId } = useAccount()
   const publicClient = usePublicClient()
@@ -18,6 +23,7 @@ export function useBotRunner() {
   const runningLoop = useRef(false)
   const previousPrices = useRef(new Map<string, number>())
   const cooldownTokens = useRef(new Map<string, number>())
+  const rpcFailureStreak = useRef(0)
   const mounted = useRef(true)
 
   const log = useCallback((level: LogLevel, message: string) => {
@@ -49,6 +55,7 @@ export function useBotRunner() {
     runningLoop.current = true
     const config = before.botConfig
     let nextDelay = config.delaySeconds * 1_000
+    let transientFailure = false
 
     try {
       const state = useTradeFarmStore.getState()
@@ -227,9 +234,18 @@ export function useBotRunner() {
       log('BUY', `Confirmed · block ${result.receipt.blockNumber.toString()} · ${result.transferLogs} transfers`)
       log('INFO', `Opened ${symbol} · ${tokenAmount.toLocaleString('en-US', { maximumFractionDigits: 4 })} tokens @ ${entryPrice.toFixed(8)} USDC`)
     } catch (cause) {
-      log('ERROR', friendlyContractError(cause))
-      halt('error')
+      if (isTransientRpcFailure(cause)) {
+        transientFailure = true
+        rpcFailureStreak.current += 1
+        nextDelay = Math.min(2_000 * 2 ** (rpcFailureStreak.current - 1), 30_000)
+        const hasPosition = Boolean(useTradeFarmStore.getState().botPosition)
+        log('WARN', `Arc RPC temporarily unavailable · retry ${rpcFailureStreak.current} in ${Math.round(nextDelay / 1_000)}s${hasPosition ? ' · position remains managed' : ''}`)
+      } else {
+        log('ERROR', friendlyContractError(cause))
+        halt('error')
+      }
     } finally {
+      if (!transientFailure) rpcFailureStreak.current = 0
       runningLoop.current = false
       const current = useTradeFarmStore.getState()
       if (mounted.current && current.botStatus === 'running') {

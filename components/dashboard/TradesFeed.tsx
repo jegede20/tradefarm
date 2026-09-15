@@ -4,11 +4,11 @@ import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import { formatPrice, formatTime, truncateAddress } from '@/lib/formatters'
 import { cn } from '@/lib/utils'
 
-export function TradesFeed() {
+export function TradesFeed({ className }: { className?: string }) {
   const selected = useTradeFarmStore((state) => state.selectedToken)
   const trades = useTradeFarmStore((state) => state.recentTrades.filter((trade) => trade.token === selected).slice(0, 50))
   return (
-    <section className="min-h-[220px]">
+    <section className={cn('min-h-[220px] bg-bg-primary', className)}>
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h2 className="panel-title">Recent trades</h2>
         <span className="font-mono text-[9px] text-text-secondary">LIVE · {trades.length} EVENTS</span>

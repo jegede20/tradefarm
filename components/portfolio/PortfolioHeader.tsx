@@ -10,6 +10,7 @@ export function PortfolioHeader() {
   const { address } = useAccount()
   const positions = useTradeFarmStore((state) => state.positions)
   const tokens = useTradeFarmStore((state) => state.tokens)
+  const botPosition = useTradeFarmStore((state) => state.botPosition)
   const { data: nativeBalance } = useBalance({ address, query: { enabled: Boolean(address), refetchInterval: 5_000 } })
   const { data: usdcRaw } = useReadContract({
     address: USDC_ADDRESS,
@@ -21,7 +22,8 @@ export function PortfolioHeader() {
 
   const usdc = usdcRaw === undefined ? 0 : Number(formatUnits(usdcRaw, 6))
   const positionValue = positions.reduce((total, position) => {
-    const live = tokens.find((token) => token.address === position.token)?.price ?? position.currentPrice
+    const trackedQuote = botPosition?.token.toLowerCase() === position.token.toLowerCase() ? botPosition.currentPrice : null
+    const live = trackedQuote ?? tokens.find((token) => token.address.toLowerCase() === position.token.toLowerCase())?.price ?? position.currentPrice
     return total + position.amount * live
   }, 0)
   const cost = positions.reduce((total, position) => total + position.entryUSDC, 0)

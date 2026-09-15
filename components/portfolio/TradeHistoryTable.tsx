@@ -43,12 +43,28 @@ export function TradeHistoryTable() {
       </div>
       {history.length === 0 ? <EmptyState title="No trade history yet" description="Confirmed buys and sells are persisted in this browser and will appear here." /> : (
         <>
-          <div className="overflow-x-auto">
+          <div className="divide-y divide-border/60 sm:hidden">
+            {rows.map((trade) => (
+              <div key={trade.id} className="p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2"><TradeSide type={trade.type} /><span className="text-sm font-semibold">{trade.symbol}</span></div>
+                  <span className="font-mono text-[9px] text-text-secondary">{formatDateTime(trade.timestamp)}</span>
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-3">
+                  <MobileMetric label="Amount in" value={trade.amountIn} />
+                  <MobileMetric label="Amount out" value={trade.amountOut} />
+                  <MobileMetric label="Price" value={formatPrice(trade.price)} />
+                </div>
+                <a href={`https://testnet.arcscan.app/tx/${trade.hash}`} target="_blank" rel="noreferrer" className="mt-4 inline-flex items-center gap-1 font-mono text-[9px] text-[#a78bfa] hover:text-white">TX {truncateAddress(trade.hash, 9, 7)}<Icon name="external" className="h-3 w-3" /></a>
+              </div>
+            ))}
+          </div>
+          <div className="hidden overflow-x-auto sm:block">
             <table className="w-full min-w-[900px] border-collapse text-left">
               <thead><tr className="border-b border-border bg-bg-primary/50">{headings.map((heading) => <th key={heading.label} className="px-4 py-2.5 text-[9px] font-medium uppercase tracking-wider text-text-secondary">{heading.key ? <button type="button" onClick={() => sort(heading.key!)} className="flex items-center gap-1 hover:text-text-primary">{heading.label}{sortKey === heading.key && <Icon name={descending ? 'arrowDown' : 'arrowUp'} className="h-2.5 w-2.5" />}</button> : heading.label}</th>)}</tr></thead>
               <tbody>{rows.map((trade) => <tr key={trade.id} className="border-b border-border/50 font-mono text-[10px] last:border-0 hover:bg-bg-elevated/40">
                 <td className="px-4 py-3 text-text-secondary">{formatDateTime(trade.timestamp)}</td>
-                <td className="px-4 py-3"><span className={`rounded border px-1.5 py-1 text-[8px] font-semibold ${trade.type === 'BUY' ? 'border-success/30 bg-success/10 text-success' : 'border-danger/30 bg-danger/10 text-danger'}`}>{trade.type}</span></td>
+                <td className="px-4 py-3"><TradeSide type={trade.type} /></td>
                 <td className="px-4 py-3 font-sans text-xs font-semibold">{trade.symbol}</td>
                 <td className="px-4 py-3">{trade.amountIn}</td><td className="px-4 py-3">{trade.amountOut}</td><td className="px-4 py-3">{formatPrice(trade.price)}</td>
                 <td className="px-4 py-3"><a href={`https://testnet.arcscan.app/tx/${trade.hash}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[#a78bfa] hover:text-white">{truncateAddress(trade.hash, 7, 5)}<Icon name="external" className="h-3 w-3" /></a></td>
@@ -61,3 +77,8 @@ export function TradeHistoryTable() {
     </section>
   )
 }
+
+function TradeSide({ type }: { type: TradeHistoryItem['type'] }) {
+  return <span className={`rounded border px-1.5 py-1 text-[8px] font-semibold ${type === 'BUY' ? 'border-success/30 bg-success/10 text-success' : 'border-danger/30 bg-danger/10 text-danger'}`}>{type}</span>
+}
+function MobileMetric({ label, value }: { label: string; value: string }) { return <div className="min-w-0"><p className="data-label">{label}</p><p className="mt-1 truncate font-mono text-[10px]">{value}</p></div> }

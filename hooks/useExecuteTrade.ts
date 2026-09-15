@@ -9,10 +9,12 @@ import {
   keccak256,
   maxUint256,
   parseAbiParameters,
+  parseEventLogs,
   parseUnits,
   toHex,
   type Address,
   type Hash,
+  type PublicClient,
 } from 'viem'
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi'
 import { BUY_SELECTOR, ERC20_ABI, ROUTER_ADDRESS, SELL_SELECTOR, USDC_ADDRESS } from '@/lib/contracts'
@@ -34,6 +36,21 @@ function encodeConfirmedRouterCall(selector: `0x${string}`, token: Address, amou
   // Pool buys use Flipt's observed low-level selector; parameters remain the
   // standard (token, amountIn, amountOutMin) tuple used by both trade paths.
   return concatHex([selector, encodeAbiParameters(tradeParameters, [token, amountIn, amountOutMin])])
+}
+
+async function waitForConfirmedReceipt(client: PublicClient, hash: Hash) {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await client.waitForTransactionReceipt({ hash, timeout: 4_000 })
+    } catch (cause) {
+      lastError = cause
+      const message = cause instanceof Error ? cause.message : String(cause)
+      if (!/http request failed|failed to fetch|fetch failed|network error|timeout|timed out|socket|429|rate.?limit|econn/i.test(message) || attempt === 3) throw cause
+      await new Promise((resolve) => window.setTimeout(resolve, 400 * 2 ** attempt))
+    }
+  }
+  throw lastError
 }
 
 export function useExecuteTrade() {
@@ -88,16 +105,9 @@ export function useExecuteTrade() {
           args: [ROUTER_ADDRESS, maxUint256],
         })
         setHash(approvalHash)
-        const approvalReceipt = await client.publicClient.waitForTransactionReceipt({ hash: approvalHash })
+        const approvalReceipt = await waitForConfirmedReceipt(client.publicClient, approvalHash)
         if (approvalReceipt.status !== 'success') throw new Error('USDC approval reverted')
       }
-
-      const tokenBalanceBefore = await client.publicClient.readContract({
-        address: tokenAddress,
-        abi: ERC20_ABI,
-        functionName: 'balanceOf',
-        args: [client.address],
-      })
 
       setStatus('pending')
       const swapHash = await client.walletClient.sendTransaction({
@@ -107,7 +117,7 @@ export function useExecuteTrade() {
         data: encodeConfirmedRouterCall(BUY_SELECTOR, tokenAddress, amountIn, minOut),
       })
       setHash(swapHash)
-      const receipt = await client.publicClient.waitForTransactionReceipt({ hash: swapHash })
+      const receipt = await waitForConfirmedReceipt(client.publicClient, swapHash)
       if (receipt.status !== 'success') throw new Error('swap() reverted')
 
       const transferTopic = keccak256(toHex('Transfer(address,address,uint256)'))
@@ -116,13 +126,10 @@ export function useExecuteTrade() {
         throw new Error(`Receipt integrity check failed: expected 4 Transfer logs, received ${transferLogs.length}`)
       }
 
-      const tokenBalanceAfter = await client.publicClient.readContract({
-        address: tokenAddress,
-        abi: ERC20_ABI,
-        functionName: 'balanceOf',
-        args: [client.address],
-      })
-      const actualOut = tokenBalanceAfter - tokenBalanceBefore
+      const parsedTransfers = parseEventLogs({ abi: ERC20_ABI, eventName: 'Transfer', logs: receipt.logs, strict: false })
+      const actualOut = parsedTransfers
+        .filter((log) => log.address.toLowerCase() === tokenAddress.toLowerCase() && log.args.to?.toLowerCase() === client.address.toLowerCase())
+        .reduce((total, log) => total + (log.args.value ?? 0n), 0n)
       if (actualOut <= 0n) throw new Error('Receipt confirmed, but no purchased tokens reached the connected wallet')
       const tokenAmount = Number(formatUnits(actualOut, 18))
       const usdcAmount = Number(formatUnits(amountIn, 6))
@@ -191,16 +198,9 @@ export function useExecuteTrade() {
           args: [ROUTER_ADDRESS, maxUint256],
         })
         setHash(approvalHash)
-        const approvalReceipt = await client.publicClient.waitForTransactionReceipt({ hash: approvalHash })
+        const approvalReceipt = await waitForConfirmedReceipt(client.publicClient, approvalHash)
         if (approvalReceipt.status !== 'success') throw new Error('Token approval reverted')
       }
-
-      const usdcBalanceBefore = await client.publicClient.readContract({
-        address: USDC_ADDRESS,
-        abi: ERC20_ABI,
-        functionName: 'balanceOf',
-        args: [client.address],
-      })
 
       setStatus('pending')
       const sellHash = await client.walletClient.sendTransaction({
@@ -210,16 +210,14 @@ export function useExecuteTrade() {
         data: encodeConfirmedRouterCall(SELL_SELECTOR, tokenAddress, amountIn, minOut),
       })
       setHash(sellHash)
-      const receipt = await client.publicClient.waitForTransactionReceipt({ hash: sellHash })
+      const receipt = await waitForConfirmedReceipt(client.publicClient, sellHash)
       if (receipt.status !== 'success') throw new Error('sell() reverted')
 
-      const usdcBalanceAfter = await client.publicClient.readContract({
-        address: USDC_ADDRESS,
-        abi: ERC20_ABI,
-        functionName: 'balanceOf',
-        args: [client.address],
-      })
-      const actualOut = usdcBalanceAfter > usdcBalanceBefore ? usdcBalanceAfter - usdcBalanceBefore : quotedOut
+      const parsedTransfers = parseEventLogs({ abi: ERC20_ABI, eventName: 'Transfer', logs: receipt.logs, strict: false })
+      const actualOut = parsedTransfers
+        .filter((log) => log.address.toLowerCase() === USDC_ADDRESS.toLowerCase() && log.args.to?.toLowerCase() === client.address.toLowerCase())
+        .reduce((total, log) => total + (log.args.value ?? 0n), 0n)
+      if (actualOut <= 0n) throw new Error('Receipt confirmed, but no USDC reached the connected wallet')
       const tokenAmount = Number(formatUnits(amountIn, 18))
       const usdcAmount = Number(formatUnits(actualOut, 6))
       reducePosition(tokenAddress, tokenAmount)
