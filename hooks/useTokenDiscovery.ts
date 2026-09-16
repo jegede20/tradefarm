@@ -14,6 +14,7 @@ import {
 import { arcTestnet } from '@/lib/chains'
 import { HUB_BUY_EVENT_TOPIC, HUB_SELL_EVENT_TOPIC, ROUTER_ADDRESS } from '@/lib/contracts'
 import { loadMarketSnapshots } from '@/lib/flipt'
+import { getFliptTopPositionSnapshot, refreshFliptTopPositions } from '@/lib/fliptLeaderboard'
 import { ARC_WS_RPC_URLS, createArcHttpTransport, isTransientArcRpcError } from '@/lib/rpc'
 import { useTradeFarmStore } from '@/store/useTradeFarmStore'
 import type { RecentTrade, Token } from '@/types/trading'
@@ -21,7 +22,7 @@ import type { RecentTrade, Token } from '@/types/trading'
 const ACTIVITY_WINDOW_BLOCKS = 256n
 const FULL_ACTIVITY_WINDOWS = 6
 const INCREMENTAL_ACTIVITY_WINDOWS = 2
-const ACTIVE_MARKET_LIMIT = 64
+const ACTIVE_MARKET_LIMIT = 96
 const BLOCK_TIME_MS = 505
 
 function activityFailureMessage(cause: unknown) {
@@ -254,11 +255,18 @@ export function useTokenDiscovery() {
       if (stopped || activitySyncing) return
       activitySyncing = true
       try {
+        // Fetch Flipt's own Top Positions concurrently so a slow/temporary API
+        // response never serializes the bounded on-chain activity backfill.
+        const topPositionsPromise = refreshFliptTopPositions(full)
         const backfill = await fetchRecentHubLogs(client, full ? FULL_ACTIVITY_WINDOWS : INCREMENTAL_ACTIVITY_WINDOWS)
         const trades = parseHubTrades(backfill.logs, backfill.latest, backfill.latestTimestampMs, backfill.blockTimeMs, store.getState().tokens)
         store.getState().mergeRecentTrades(trades)
         const currentTrades = store.getState().recentTrades
-        const activeTokens = rankActiveTokens(currentTrades)
+        await topPositionsPromise
+        const topPositions = getFliptTopPositionSnapshot().tokens
+        const rankedActivity = rankActiveTokens(currentTrades)
+        const activeTokens = [...new Map([...topPositions, ...rankedActivity].map((token) => [token.toLowerCase(), token])).values()]
+          .slice(0, ACTIVE_MARKET_LIMIT)
         const snapshots = await loadSnapshots(client, activeTokens)
         mergeMarkets(snapshots)
         const cutoff = Date.now() - 10 * 60_000

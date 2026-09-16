@@ -38,6 +38,8 @@ export interface ScannedToken {
   poolTokenSharePct: number
   liquidityLockPct: number
   creatorHoldingPct: number
+  topPositionRank: number | null
+  topPositionHolderSharePct: number | null
   market: Token
   plan: TradePlan
 }
@@ -210,6 +212,8 @@ export async function scanBestToken({
   signalHistory,
   liquidityLocks,
   cooldownTokens,
+  preferredTokenRanks,
+  preferredTokenHeld,
   log,
 }: {
   publicClient: PublicClient
@@ -233,6 +237,8 @@ export async function scanBestToken({
   signalHistory: Map<string, MarketSignalPoint[]>
   liquidityLocks: Map<string, LiquidityLockSnapshot>
   cooldownTokens: Map<string, number>
+  preferredTokenRanks?: Map<string, number>
+  preferredTokenHeld?: Map<string, number>
   log: (level: LogLevel, message: string) => void
 }) {
   // Rank the synchronized universe by actual rolling activity before applying
@@ -245,9 +251,20 @@ export async function scanBestToken({
     const key = trade.token.toLowerCase()
     recentActivity.set(key, (recentActivity.get(key) ?? 0) + 1)
   }
+  const topRanks = strategyMode === 'rank' ? preferredTokenRanks ?? new Map<string, number>() : new Map<string, number>()
   const marketsToReview = [...markets]
-    .sort((left, right) => (recentActivity.get(right.address.toLowerCase()) ?? 0) - (recentActivity.get(left.address.toLowerCase()) ?? 0) || right.reserve - left.reserve)
-    .slice(0, 64)
+    .sort((left, right) => {
+      const leftTopRank = topRanks.get(left.address.toLowerCase())
+      const rightTopRank = topRanks.get(right.address.toLowerCase())
+      if (leftTopRank !== undefined || rightTopRank !== undefined) {
+        if (leftTopRank === undefined) return 1
+        if (rightTopRank === undefined) return -1
+        return leftTopRank - rightTopRank
+      }
+      return (recentActivity.get(right.address.toLowerCase()) ?? 0) - (recentActivity.get(left.address.toLowerCase()) ?? 0)
+        || right.reserve - left.reserve
+    })
+    .slice(0, 96)
   const candidates: Candidate[] = []
   const rejected = { cooldown: 0, liquidity: 0, activity: 0, pressure: 0, concentration: 0, volatility: 0, impact: 0, depth: 0, shock: 0, warmup: 0 }
   const rejectionDetails: string[] = []
@@ -255,7 +272,7 @@ export async function scanBestToken({
     rejected[category] += 1
     rejectionDetails.push(`${market.symbol}: ${reason}`)
   }
-  log('SCAN', `${strategyMode === 'profit' ? 'Profit-first' : 'Rank-volume'} scan · ${marketsToReview.length}/${markets.length} pool snapshots · ${recentActivity.size} active tokens indexed`)
+  log('SCAN', `${strategyMode === 'profit' ? 'Profit-first' : 'Rank-volume'} scan · ${marketsToReview.length}/${markets.length} pool snapshots · ${recentActivity.size} active tokens indexed${topRanks.size > 0 ? ` · ${topRanks.size} Flipt top positions prioritized` : ''}`)
 
   for (const market of marketsToReview) {
     if (!market.graduated || market.poolTokenReserve <= 0 || market.supply <= 0) {
@@ -286,8 +303,31 @@ export async function scanBestToken({
     }
 
     const poolTokenSharePct = market.poolTokenReserve / market.supply * 100
-    const requiredSignalPoints = strategyMode === 'profit' ? 4 : 2
-    const requiredObservationMs = strategyMode === 'profit' ? 60_000 : 10_000
+    const topPositionRank = topRanks.get(key)
+    const topPositionHeld = preferredTokenHeld?.get(key)
+    const topPositionHolderSharePct = topPositionHeld !== undefined && market.poolTokenReserve > 0
+      ? topPositionHeld / market.poolTokenReserve * 100
+      : null
+    // The screenshot leaderboard is unrealised PnL. A winning holder can still
+    // dump into this pool, so do not copy a top position that controls enough
+    // inventory to move the bot beyond its normal stop-loss.
+    if (strategyMode === 'rank' && topPositionRank !== undefined && topPositionHolderSharePct === null) {
+      reject(market, `Flipt top #${topPositionRank} has no verifiable holder balance`, 'concentration')
+      continue
+    }
+    if (strategyMode === 'rank' && topPositionHolderSharePct !== null && topPositionHolderSharePct > 2) {
+      reject(market, `Observed Flipt top holder controls ${topPositionHolderSharePct.toFixed(1)}% of pool-side tokens (maximum 2%)`, 'concentration')
+      continue
+    }
+    // A concentration-checked Flipt top position supplies an independent
+    // performance signal, so it can replace recent activity/pressure waits.
+    // Every on-chain execution, quote and protocol-safety gate remains active.
+    const fastTopPositionPath = strategyMode === 'rank' && topPositionRank !== undefined
+    // Rank mode is an execution/turnover strategy, not a price-prediction
+    // strategy. Its fresh reserve snapshot plus live preflight are sufficient;
+    // sustained activity remains required for non-top-position candidates.
+    const requiredSignalPoints = strategyMode === 'profit' ? 4 : 1
+    const requiredObservationMs = strategyMode === 'profit' ? 60_000 : 0
     const observationMs = history.length > 1 ? history[history.length - 1].timestamp - history[0].timestamp : 0
     if (history.length < requiredSignalPoints || observationMs < requiredObservationMs) {
       reject(market, `reserve warmup ${history.length}/${requiredSignalPoints} samples · ${Math.floor(observationMs / 1_000)}/${requiredObservationMs / 1_000}s`, 'warmup')
@@ -300,7 +340,7 @@ export async function scanBestToken({
     const maximumTradeAgeSeconds = strategyMode === 'profit' ? 180 : 600
     const latestTradeAt = tokenTrades.reduce((latest, trade) => Math.max(latest, trade.timestamp), 0)
     const tradeAgeSeconds = latestTradeAt > 0 ? Math.floor((Date.now() - latestTradeAt) / 1_000) : Number.POSITIVE_INFINITY
-    if (tokenTrades.length < minRecentTrades || uniqueTraders < 2 || activityBuckets < requiredActivityBuckets || tradeAgeSeconds > maximumTradeAgeSeconds) {
+    if (!fastTopPositionPath && (tokenTrades.length < minRecentTrades || uniqueTraders < 2 || activityBuckets < requiredActivityBuckets || tradeAgeSeconds > maximumTradeAgeSeconds)) {
       reject(market, `${tokenTrades.length}/${minRecentTrades} trades · ${uniqueTraders}/2 wallets · ${activityBuckets}/${requiredActivityBuckets} time buckets · latest ${Number.isFinite(tradeAgeSeconds) ? `${tradeAgeSeconds}s` : 'never'} (max ${maximumTradeAgeSeconds}s)`, 'activity')
       continue
     }
@@ -308,12 +348,12 @@ export async function scanBestToken({
     const buyVolume = tokenTrades.filter((trade) => trade.type === 'BUY').reduce((total, trade) => total + trade.amount * trade.price, 0)
     const sellVolume = tokenTrades.filter((trade) => trade.type === 'SELL').reduce((total, trade) => total + trade.amount * trade.price, 0)
     const totalVolume = buyVolume + sellVolume
-    if (sellVolume <= 0 || totalVolume <= 0) {
+    if (!fastTopPositionPath && (sellVolume <= 0 || totalVolume <= 0)) {
       reject(market, 'no recent verified sell flow', 'activity')
       continue
     }
-    const buyPressurePct = buyVolume / totalVolume * 100
-    if (buyPressurePct < minBuyPressurePct || buyPressurePct > maxBuyPressurePct) {
+    const buyPressurePct = totalVolume > 0 ? buyVolume / totalVolume * 100 : 50
+    if (!fastTopPositionPath && (buyPressurePct < minBuyPressurePct || buyPressurePct > maxBuyPressurePct)) {
       reject(market, `${buyPressurePct.toFixed(0)}% buy pressure outside ${minBuyPressurePct}–${maxBuyPressurePct}% range`, 'pressure')
       continue
     }
@@ -322,7 +362,9 @@ export async function scanBestToken({
       const wallet = trade.wallet.toLowerCase()
       walletFlows.set(wallet, (walletFlows.get(wallet) ?? 0) + trade.amount * trade.price)
     }
-    const largestWalletFlowPct = Math.max(...walletFlows.values()) / totalVolume * 100
+    const largestWalletFlowPct = totalVolume > 0 && walletFlows.size > 0
+      ? Math.max(...walletFlows.values()) / totalVolume * 100
+      : 0
     if (largestWalletFlowPct > maxWalletFlowPct) {
       reject(market, `largest wallet drives ${largestWalletFlowPct.toFixed(0)}% of flow (maximum ${maxWalletFlowPct}%)`, 'concentration')
       continue
@@ -346,7 +388,7 @@ export async function scanBestToken({
       continue
     }
     const sellShock = assessRecentSellShock(market, plan, tokenTrades)
-    if (strategyMode === 'profit' && sellShock && sellShock.stressedLossPct > stopLossPct) {
+    if ((strategyMode === 'profit' || fastTopPositionPath) && sellShock && sellShock.stressedLossPct > stopLossPct) {
       reject(
         market,
         `recent sell shock stress -${sellShock.stressedLossPct.toFixed(2)}% exceeds ${stopLossPct.toFixed(2)}% stop-loss · ${sellShock.largestSellUSDC.toLocaleString('en-US', { maximumFractionDigits: 0 })} USDC / ${sellShock.poolTokenSharePct.toFixed(1)}% of pool tokens`,
@@ -363,7 +405,7 @@ export async function scanBestToken({
       continue
     }
     const sellDepthMultiple = sellVolume / plan.size
-    if (sellDepthMultiple < minSellDepthMultiple) {
+    if (!fastTopPositionPath && sellDepthMultiple < minSellDepthMultiple) {
       reject(market, `verified recent sells cover ${sellDepthMultiple.toFixed(2)}× intended position (minimum ${minSellDepthMultiple.toFixed(2)}×)`, 'depth')
       continue
     }
@@ -377,8 +419,9 @@ export async function scanBestToken({
     const reserveDiversityScore = clamp(poolTokenSharePct / 10, 0, 5)
     const executableSizeScore = requestedSize > 0 ? clamp(plan.size / requestedSize * 25, 0, 25) : 0
     const sellCoverageScore = clamp(sellDepthMultiple / Math.max(minSellDepthMultiple, 0.01) * 10, 0, 10)
+    const topPositionScore = topPositionRank === undefined ? 0 : clamp(16 - topPositionRank * 0.4, 4, 15)
     const score = strategyMode === 'rank'
-      ? clamp(liquidityScore + clamp(activityScore, 0, 20) + clamp(pressureScore, 0, 10) + depthScore + executableSizeScore + sellCoverageScore, 0, 100)
+      ? clamp(liquidityScore + clamp(activityScore, 0, 20) + clamp(pressureScore, 0, 10) + depthScore + executableSizeScore + sellCoverageScore + topPositionScore, 0, 100)
       : clamp(liquidityScore + activityScore + pressureScore + momentumScore + depthScore + reserveDiversityScore, 0, 100)
 
     candidates.push({
@@ -396,6 +439,8 @@ export async function scanBestToken({
       sellDepthMultiple,
       largestWalletFlowPct,
       poolTokenSharePct,
+      topPositionRank: topPositionRank ?? null,
+      topPositionHolderSharePct,
       market,
       plan,
     })
@@ -427,8 +472,10 @@ export async function scanBestToken({
   }
 
   if (best) {
-    log('SCAN', `Selected ${best.market.symbol} · quality ${best.score.toFixed(0)}/100 · LP lock ${best.liquidityLockPct.toFixed(1)}% · creator ${best.creatorHoldingPct.toFixed(1)}%`)
-    log('SCAN', `Signals · ${best.recentTradeCount} trades / ${best.uniqueTraders} wallets / ${best.activityBuckets} time buckets · buys ${best.buyPressurePct.toFixed(0)}% · sell coverage ${best.sellDepthMultiple.toFixed(2)}× · momentum ${best.momentumPct >= 0 ? '+' : ''}${best.momentumPct.toFixed(2)}%`)
+    log('SCAN', `Selected ${best.market.symbol}${best.topPositionRank ? ` · Flipt top position #${best.topPositionRank}` : ''} · quality ${best.score.toFixed(0)}/100 · LP lock ${best.liquidityLockPct.toFixed(1)}% · creator ${best.creatorHoldingPct.toFixed(1)}%${best.topPositionHolderSharePct !== null ? ` · top holder/pool ${best.topPositionHolderSharePct.toFixed(2)}%` : ''}`)
+    log('SCAN', best.topPositionRank
+      ? `Top-position fast path · holder/pool ${best.topPositionHolderSharePct?.toFixed(2)}% · ${best.recentTradeCount} recent trades checked for adverse sell stress`
+      : `Signals · ${best.recentTradeCount} trades / ${best.uniqueTraders} wallets / ${best.activityBuckets} time buckets · buys ${best.buyPressurePct.toFixed(0)}% · sell coverage ${best.sellDepthMultiple.toFixed(2)}× · momentum ${best.momentumPct >= 0 ? '+' : ''}${best.momentumPct.toFixed(2)}%`)
     log('SCAN', `Executable depth · entry ${best.plan.priceImpactPct.toFixed(2)}% · full-position exit ${best.plan.exitPriceImpactPct.toFixed(2)}% · estimated round-trip cost ${(best.plan.size - best.plan.estimatedExitUSDC).toFixed(2)} USDC`)
   } else {
     const summary = Object.entries(rejected).filter(([, count]) => count > 0).map(([reason, count]) => `${reason} ${count}`).join(' · ')

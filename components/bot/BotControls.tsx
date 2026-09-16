@@ -69,8 +69,8 @@ export function BotControls() {
       objectiveMode: 'reach',
       tradeSize: 50_000,
       delaySeconds: 10,
-      minBuyPressurePct: 50,
-      maxBuyPressurePct: 95,
+      minBuyPressurePct: 30,
+      maxBuyPressurePct: 97,
       minSellDepthMultiple: 0.25,
       maxSessionLoss: Math.max(config.maxSessionLoss, 6_000),
       maxConsecutiveLosses: Math.max(config.maxConsecutiveLosses, 7),
@@ -147,8 +147,8 @@ export function BotControls() {
         <fieldset disabled={running} className="space-y-5 disabled:opacity-60">
           <ConfigSection title="Strategy">
             <div className="grid grid-cols-2 rounded-md bg-bg-primary p-1">
-              <ModeButton active={config.strategyMode === 'profit'} onClick={() => setConfig({ strategyMode: 'profit' })}>PROFIT-FIRST</ModeButton>
-              <ModeButton active={config.strategyMode === 'rank'} onClick={() => setConfig({ strategyMode: 'rank' })}>RANK-VOLUME</ModeButton>
+              <ModeButton active={config.strategyMode === 'profit'} onClick={() => setConfig({ strategyMode: 'profit', minBuyPressurePct: 55, maxBuyPressurePct: 88, minSellDepthMultiple: 1 })}>PROFIT-FIRST</ModeButton>
+              <ModeButton active={config.strategyMode === 'rank'} onClick={() => setConfig({ strategyMode: 'rank', minBuyPressurePct: 30, maxBuyPressurePct: 97, minSellDepthMultiple: 0.25 })}>RANK-VOLUME</ModeButton>
             </div>
             <p className="text-[9px] leading-relaxed text-text-secondary">{config.strategyMode === 'profit' ? 'Requires sustained activity, at least 60 seconds of reserve observations and positive reserve momentum before entry.' : 'Favors larger executable turnover in deeper qualified pools, closes normal-cost cycles promptly, and continues until the sampled target or ranking-loss budget is reached.'}</p>
           </ConfigSection>
@@ -195,8 +195,8 @@ export function BotControls() {
             <div className="grid grid-cols-2 gap-3">
               <NumberField label="Minimum liquidity" value={config.minLiquidityUSDC} min={5000} max={2000000} step={5000} suffix="USDC" onChange={(value) => setConfig({ minLiquidityUSDC: clamp(value, 5000, 2000000) })} />
               <NumberField label="Recent activity" value={config.minRecentTrades} min={2} max={20} step={1} suffix="TRADES" onChange={(value) => setConfig({ minRecentTrades: clamp(value, 2, 20) })} />
-              <NumberField label="Minimum buy pressure" value={config.minBuyPressurePct} min={50} max={85} step={1} suffix="%" onChange={(value) => setConfig({ minBuyPressurePct: clamp(value, 50, Math.min(85, config.maxBuyPressurePct - 1)) })} />
-              <NumberField label="Maximum buy pressure" value={config.maxBuyPressurePct} min={60} max={95} step={1} suffix="%" onChange={(value) => setConfig({ maxBuyPressurePct: clamp(value, Math.max(60, config.minBuyPressurePct + 1), 95) })} />
+              <NumberField label="Minimum buy pressure" value={config.minBuyPressurePct} min={config.strategyMode === 'rank' ? 20 : 50} max={config.strategyMode === 'rank' ? 90 : 85} step={1} suffix="%" onChange={(value) => setConfig({ minBuyPressurePct: clamp(value, config.strategyMode === 'rank' ? 20 : 50, Math.min(config.strategyMode === 'rank' ? 90 : 85, config.maxBuyPressurePct - 1)) })} />
+              <NumberField label="Maximum buy pressure" value={config.maxBuyPressurePct} min={config.strategyMode === 'rank' ? 40 : 60} max={config.strategyMode === 'rank' ? 99 : 95} step={1} suffix="%" onChange={(value) => setConfig({ maxBuyPressurePct: clamp(value, Math.max(config.strategyMode === 'rank' ? 40 : 60, config.minBuyPressurePct + 1), config.strategyMode === 'rank' ? 99 : 95) })} />
               <NumberField label="Recent sell coverage" value={config.minSellDepthMultiple} min={0.25} max={5} step={0.25} suffix="× SIZE" onChange={(value) => setConfig({ minSellDepthMultiple: clamp(value, 0.25, 5) })} />
               <NumberField label="LP self-lock" value={config.minLiquidityLockPct} min={75} max={100} step={1} suffix="%" onChange={(value) => setConfig({ minLiquidityLockPct: clamp(value, 75, 100) })} />
               <NumberField label="Creator holdings" value={config.maxCreatorHoldingPct} min={0} max={75} step={1} suffix="% MAX" onChange={(value) => setConfig({ maxCreatorHoldingPct: clamp(value, 0, 75) })} />
@@ -223,7 +223,7 @@ export function BotControls() {
             </div>
             {config.mode === 'manual' ? (
               <input value={config.manualToken} onChange={(event) => setConfig({ manualToken: event.target.value })} placeholder="0x… token address" className="input-terminal h-10 text-[11px]" />
-            ) : <div className="space-y-2"><p className="text-[10px] leading-relaxed text-text-secondary">Backfills recent Hub activity, ranks active pools before entry, trades one token at a time, then rotates after a two-scan cooldown.</p><p className={`font-mono text-[9px] ${marketActivityReady ? 'text-success' : 'text-warning'}`}>{marketActivityReady ? `${marketActivityTokenCount} ACTIVE TOKENS INDEXED · SYNC ${marketActivityLastUpdated ? Math.max(0, Math.floor((Date.now() - marketActivityLastUpdated) / 1_000)) : 0}S AGO` : marketActivityError ?? 'INDEXING RECENT HUB ACTIVITY…'}</p></div>}
+            ) : <div className="space-y-2"><p className="text-[10px] leading-relaxed text-text-secondary">Checks Flipt Top Positions first, rejects whale-heavy winners, then selects the strongest wider-market candidate with a safe full exit before rotating.</p><p className={`font-mono text-[9px] ${marketActivityReady ? 'text-success' : 'text-warning'}`}>{marketActivityReady ? `${marketActivityTokenCount} ACTIVE TOKENS INDEXED · SYNC ${marketActivityLastUpdated ? Math.max(0, Math.floor((Date.now() - marketActivityLastUpdated) / 1_000)) : 0}S AGO` : marketActivityError ?? 'INDEXING RECENT HUB ACTIVITY…'}</p></div>}
           </ConfigSection>
         </fieldset>
 

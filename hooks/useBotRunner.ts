@@ -5,6 +5,7 @@ import { formatUnits, isAddress, parseUnits, type Address } from 'viem'
 import { useAccount, usePublicClient } from 'wagmi'
 import { ERC20_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from '@/lib/contracts'
 import { friendlyContractError, getMarketSnapshot, getPairQuote } from '@/lib/flipt'
+import { getFliptTopPositionSnapshot } from '@/lib/fliptLeaderboard'
 import {
   assessRecentSellShock,
   buildSafeTradePlan,
@@ -281,6 +282,8 @@ export function useBotRunner() {
           signalHistory: signalHistory.current,
           liquidityLocks: liquidityLocks.current,
           cooldownTokens: cooldownTokens.current,
+          preferredTokenRanks: getFliptTopPositionSnapshot().ranks,
+          preferredTokenHeld: getFliptTopPositionSnapshot().largestHeldByToken,
           log,
         })
         useTradeFarmStore.getState().setBotTokensScanned(useTradeFarmStore.getState().botTokensScanned + scan.scanned)
