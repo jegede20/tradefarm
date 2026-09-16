@@ -305,18 +305,18 @@ export async function scanBestToken({
     const poolTokenSharePct = market.poolTokenReserve / market.supply * 100
     const topPositionRank = topRanks.get(key)
     const topPositionHeld = preferredTokenHeld?.get(key)
-    const topPositionHolderSharePct = topPositionHeld !== undefined && market.poolTokenReserve > 0
-      ? topPositionHeld / market.poolTokenReserve * 100
+    const topPositionHolderSharePct = topPositionHeld !== undefined && market.supply > 0
+      ? topPositionHeld / market.supply * 100
       : null
-    // The screenshot leaderboard is unrealised PnL. A winning holder can still
-    // dump into this pool, so do not copy a top position that controls enough
-    // inventory to move the bot beyond its normal stop-loss.
+    // The screenshot leaderboard is unrealised PnL. Measure its largest shown
+    // position against total supply—not the deliberately small pool-side token
+    // reserve—so the concentration check is meaningful for graduated tokens.
     if (strategyMode === 'rank' && topPositionRank !== undefined && topPositionHolderSharePct === null) {
       reject(market, `Flipt top #${topPositionRank} has no verifiable holder balance`, 'concentration')
       continue
     }
-    if (strategyMode === 'rank' && topPositionHolderSharePct !== null && topPositionHolderSharePct > 2) {
-      reject(market, `Observed Flipt top holder controls ${topPositionHolderSharePct.toFixed(1)}% of pool-side tokens (maximum 2%)`, 'concentration')
+    if (strategyMode === 'rank' && topPositionHolderSharePct !== null && topPositionHolderSharePct > 80) {
+      reject(market, `Observed Flipt top position controls ${topPositionHolderSharePct.toFixed(1)}% of total supply (maximum 80%)`, 'concentration')
       continue
     }
     // A concentration-checked Flipt top position supplies an independent
@@ -472,9 +472,9 @@ export async function scanBestToken({
   }
 
   if (best) {
-    log('SCAN', `Selected ${best.market.symbol}${best.topPositionRank ? ` · Flipt top position #${best.topPositionRank}` : ''} · quality ${best.score.toFixed(0)}/100 · LP lock ${best.liquidityLockPct.toFixed(1)}% · creator ${best.creatorHoldingPct.toFixed(1)}%${best.topPositionHolderSharePct !== null ? ` · top holder/pool ${best.topPositionHolderSharePct.toFixed(2)}%` : ''}`)
+    log('SCAN', `Selected ${best.market.symbol}${best.topPositionRank ? ` · Flipt top position #${best.topPositionRank}` : ''} · quality ${best.score.toFixed(0)}/100 · LP lock ${best.liquidityLockPct.toFixed(1)}% · creator ${best.creatorHoldingPct.toFixed(1)}%${best.topPositionHolderSharePct !== null ? ` · top holder/supply ${best.topPositionHolderSharePct.toFixed(2)}%` : ''}`)
     log('SCAN', best.topPositionRank
-      ? `Top-position fast path · holder/pool ${best.topPositionHolderSharePct?.toFixed(2)}% · ${best.recentTradeCount} recent trades checked for adverse sell stress`
+      ? `Top-position fast path · holder/supply ${best.topPositionHolderSharePct?.toFixed(2)}% · ${best.recentTradeCount} recent trades checked for adverse sell stress`
       : `Signals · ${best.recentTradeCount} trades / ${best.uniqueTraders} wallets / ${best.activityBuckets} time buckets · buys ${best.buyPressurePct.toFixed(0)}% · sell coverage ${best.sellDepthMultiple.toFixed(2)}× · momentum ${best.momentumPct >= 0 ? '+' : ''}${best.momentumPct.toFixed(2)}%`)
     log('SCAN', `Executable depth · entry ${best.plan.priceImpactPct.toFixed(2)}% · full-position exit ${best.plan.exitPriceImpactPct.toFixed(2)}% · estimated round-trip cost ${(best.plan.size - best.plan.estimatedExitUSDC).toFixed(2)} USDC`)
   } else {

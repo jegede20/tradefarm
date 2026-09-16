@@ -223,7 +223,7 @@ export function BotControls() {
             </div>
             {config.mode === 'manual' ? (
               <input value={config.manualToken} onChange={(event) => setConfig({ manualToken: event.target.value })} placeholder="0x… token address" className="input-terminal h-10 text-[11px]" />
-            ) : <div className="space-y-2"><p className="text-[10px] leading-relaxed text-text-secondary">Checks Flipt Top Positions first, rejects whale-heavy winners, then selects the strongest wider-market candidate with a safe full exit before rotating.</p><p className={`font-mono text-[9px] ${marketActivityReady ? 'text-success' : 'text-warning'}`}>{marketActivityReady ? `${marketActivityTokenCount} ACTIVE TOKENS INDEXED · SYNC ${marketActivityLastUpdated ? Math.max(0, Math.floor((Date.now() - marketActivityLastUpdated) / 1_000)) : 0}S AGO` : marketActivityError ?? 'INDEXING RECENT HUB ACTIVITY…'}</p></div>}
+            ) : <div className="space-y-2"><p className="text-[10px] leading-relaxed text-text-secondary">Checks Flipt Top Positions first, rejects the most concentrated winners, then selects the strongest candidate with a safe full exit before rotating.</p><p className={`font-mono text-[9px] ${marketActivityReady ? 'text-success' : 'text-warning'}`}>{marketActivityReady ? `${marketActivityTokenCount} ACTIVE TOKENS INDEXED · SYNC ${marketActivityLastUpdated ? Math.max(0, Math.floor((Date.now() - marketActivityLastUpdated) / 1_000)) : 0}S AGO` : marketActivityError ?? 'INDEXING RECENT HUB ACTIVITY…'}</p></div>}
           </ConfigSection>
         </fieldset>
 
