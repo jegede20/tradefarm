@@ -1,6 +1,6 @@
 import { formatUnits, isAddress, type Address } from 'viem'
 
-const FLIPT_TOP_POSITIONS_URL = 'https://api-testnet.flipt.fun/leaderboard?kind=positions&limit=30'
+const FLIPT_TOP_POSITIONS_URL = '/api/flipt-top-positions'
 const REQUEST_TIMEOUT_MS = 2_500
 const REFRESH_INTERVAL_MS = 20_000
 
