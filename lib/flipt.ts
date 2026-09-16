@@ -1,5 +1,5 @@
 import { formatUnits, type Address, type PublicClient } from 'viem'
-import { ERC20_ABI, MULTICALL3_ADDRESS, PAIR_ABI, ROUTER_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from './contracts'
+import { CORE_PAUSED_ERROR_SELECTOR, ERC20_ABI, MULTICALL3_ADDRESS, PAIR_ABI, POOLS_PAUSED_ERROR_SELECTOR, ROUTER_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from './contracts'
 import type { Token } from '@/types/trading'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
@@ -9,13 +9,74 @@ export function isZeroAddress(address?: string) {
   return !address || address.toLowerCase() === ZERO_ADDRESS
 }
 
+export class PreSubmissionSimulationError extends Error {
+  override readonly cause: unknown
+
+  constructor(cause: unknown) {
+    super('The exact Flipt transaction failed pre-submission simulation.')
+    this.name = 'PreSubmissionSimulationError'
+    this.cause = cause
+  }
+}
+
+function serializeContractError(cause: unknown) {
+  const parts: string[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = cause
+  for (let depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
+    if (seen.has(current)) break
+    seen.add(current)
+    if (typeof current === 'string') {
+      parts.push(current)
+      break
+    }
+    if (current instanceof Error) {
+      const viemCause = current as Error & { cause?: unknown; data?: unknown; details?: unknown; shortMessage?: unknown }
+      parts.push(viemCause.message)
+      for (const value of [viemCause.shortMessage, viemCause.details, viemCause.data]) {
+        if (typeof value === 'string') parts.push(value)
+      }
+      current = viemCause.cause
+      continue
+    }
+    try {
+      parts.push(JSON.stringify(current, (_key, value) => typeof value === 'bigint' ? value.toString() : value))
+    } catch {
+      parts.push(String(current))
+    }
+    break
+  }
+  return parts.join('\n')
+}
+
+export function isPreSubmissionSimulationError(cause: unknown) {
+  return cause instanceof PreSubmissionSimulationError
+    || (cause instanceof Error && cause.name === 'PreSubmissionSimulationError')
+}
+
+export function isFliptProtocolPausedError(cause: unknown) {
+  const raw = serializeContractError(cause)
+  const normalized = raw.toLowerCase()
+  return normalized.includes(CORE_PAUSED_ERROR_SELECTOR)
+    || normalized.includes(POOLS_PAUSED_ERROR_SELECTOR)
+    || /CorePaused|PoolsPaused/i.test(raw)
+}
+
 export function friendlyContractError(cause: unknown) {
-  const raw = cause instanceof Error ? cause.message : String(cause)
+  const raw = serializeContractError(cause)
   const firstLine = raw.split('\n')[0]?.trim()
+  if (raw.toLowerCase().includes(CORE_PAUSED_ERROR_SELECTOR)) {
+    return 'Flipt core execution is paused on-chain. No wallet can buy or sell until Flipt unpauses it.'
+  }
+  if (raw.toLowerCase().includes(POOLS_PAUSED_ERROR_SELECTOR)) {
+    return 'Flipt pool execution is paused on-chain. No graduated-pool trade can execute until Flipt unpauses it.'
+  }
+  if (/CorePaused/i.test(raw)) return 'Flipt core execution is paused on-chain. No wallet can buy or sell until Flipt unpauses it.'
+  if (/PoolsPaused/i.test(raw)) return 'Flipt pool execution is paused on-chain. No graduated-pool trade can execute until Flipt unpauses it.'
   if (/user rejected|user denied/i.test(raw)) return 'Signature rejected in wallet.'
   if (/insufficient funds/i.test(raw)) return 'Insufficient USDC for the trade and network fee.'
   if (/allowance/i.test(raw)) return 'Token allowance is too low.'
-  if (/reverted/i.test(raw)) return 'The Flipt contract rejected this call. Refresh market data and try again.'
+  if (/reverted/i.test(raw)) return 'The Flipt contract rejected this call during pre-submission simulation. No transaction was sent.'
   return firstLine || 'The request could not be completed.'
 }
 

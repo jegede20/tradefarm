@@ -19,7 +19,7 @@ import {
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi'
 import { getAccount } from '@wagmi/core'
 import { BUY_SELECTOR, ERC20_ABI, ROUTER_ADDRESS, SELL_SELECTOR, USDC_ADDRESS } from '@/lib/contracts'
-import { friendlyContractError, getPairQuote } from '@/lib/flipt'
+import { friendlyContractError, getPairQuote, PreSubmissionSimulationError } from '@/lib/flipt'
 import { resolveStoredMarket } from '@/lib/marketResolver'
 import { isTransientArcRpcError } from '@/lib/rpc'
 import { wagmiConfig } from '@/lib/wagmiConfig'
@@ -127,12 +127,28 @@ export function useExecuteTrade() {
 
       assertSubmissionAllowed(shouldSubmit)
       assertWalletUnchanged(client.address)
+      const swapData = encodeConfirmedRouterCall(BUY_SELECTOR, tokenAddress, amountIn, minOut)
+      // Simulate the exact sender, route and slippage-bound calldata immediately
+      // before opening the wallet. Deterministic Hub reverts must never become a
+      // pointless signature request.
+      try {
+        await client.publicClient.call({
+          account: client.address,
+          to: ROUTER_ADDRESS,
+          data: swapData,
+        })
+      } catch (cause) {
+        if (isTransientArcRpcError(cause)) throw cause
+        throw new PreSubmissionSimulationError(cause)
+      }
+      assertSubmissionAllowed(shouldSubmit)
+      assertWalletUnchanged(client.address)
       setStatus('pending')
       const swapHash = await client.walletClient.sendTransaction({
         account: client.address,
         chain: client.walletClient.chain,
         to: ROUTER_ADDRESS,
-        data: encodeConfirmedRouterCall(BUY_SELECTOR, tokenAddress, amountIn, minOut),
+        data: swapData,
       })
       setHash(swapHash)
       const receipt = await waitForConfirmedReceipt(client.publicClient, swapHash)
@@ -228,12 +244,28 @@ export function useExecuteTrade() {
 
       assertSubmissionAllowed(shouldSubmit)
       assertWalletUnchanged(client.address)
+      const sellData = encodeConfirmedRouterCall(SELL_SELECTOR, tokenAddress, amountIn, minOut)
+      // Keep sells subject to the same exact-call preflight as buys. This avoids
+      // asking for a signature while Flipt's core/pool scopes are paused or the
+      // quoted exit is no longer executable.
+      try {
+        await client.publicClient.call({
+          account: client.address,
+          to: ROUTER_ADDRESS,
+          data: sellData,
+        })
+      } catch (cause) {
+        if (isTransientArcRpcError(cause)) throw cause
+        throw new PreSubmissionSimulationError(cause)
+      }
+      assertSubmissionAllowed(shouldSubmit)
+      assertWalletUnchanged(client.address)
       setStatus('pending')
       const sellHash = await client.walletClient.sendTransaction({
         account: client.address,
         chain: client.walletClient.chain,
         to: ROUTER_ADDRESS,
-        data: encodeConfirmedRouterCall(SELL_SELECTOR, tokenAddress, amountIn, minOut),
+        data: sellData,
       })
       setHash(sellHash)
       const receipt = await waitForConfirmedReceipt(client.publicClient, sellHash)

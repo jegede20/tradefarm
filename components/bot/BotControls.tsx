@@ -10,7 +10,7 @@ import { TokenBadge } from '@/components/shared/TokenBadge'
 import { PnLDisplay } from '@/components/shared/PnLDisplay'
 import { Icon } from '@/components/shared/Icons'
 import { cn } from '@/lib/utils'
-import { ERC20_ABI, USDC_ADDRESS } from '@/lib/contracts'
+import { ERC20_ABI, ROUTER_ABI, ROUTER_ADDRESS, USDC_ADDRESS } from '@/lib/contracts'
 
 export function BotControls() {
   const { address, isConnected } = useAccount()
@@ -45,6 +45,12 @@ export function BotControls() {
     args: address ? [address] : undefined,
     query: { enabled: Boolean(address), refetchInterval: 4_000 },
   })
+  const { data: pausedScopesRaw } = useReadContract({
+    address: ROUTER_ADDRESS,
+    abi: ROUTER_ABI,
+    functionName: 'pausedScopes',
+    query: { refetchInterval: 5_000 },
+  })
   const [countdown, setCountdown] = useState(0)
   const [elapsed, setElapsed] = useState(0)
   const running = status === 'running'
@@ -52,6 +58,8 @@ export function BotControls() {
     ? running ? position.currentPrice : tokens.find((token) => token.address.toLowerCase() === position.token.toLowerCase())?.price ?? position.currentPrice
     : 0
   const availableUsdc = usdcRaw === undefined ? null : Number(formatUnits(usdcRaw, 6))
+  const pausedScopes = pausedScopesRaw === undefined ? null : Number(pausedScopesRaw)
+  const protocolPaused = pausedScopes !== null && (pausedScopes & 0b011) !== 0
   const balanceTooLow = availableUsdc !== null && availableUsdc < 100
   const rankReached = leaderboardRank !== null && leaderboardRank <= config.targetRank
   const rankOneWaySize = Math.max(100, Math.min(config.tradeSize, availableUsdc ?? config.tradeSize))
@@ -105,6 +113,12 @@ export function BotControls() {
           <div className="flex items-center justify-between gap-3"><span className="panel-title text-warning">Signing mode</span><span className="font-mono text-[8px] text-warning">{sessionCapabilities.state === 'checking' ? 'CHECKING WALLET' : sessionCapabilities.state === 'advertised' ? 'SESSION API DETECTED' : 'WALLET-CONFIRMED'}</span></div>
           <p className="mt-1.5 text-[9px] leading-relaxed text-text-secondary">{sessionCapabilities.detail} TradeFarm never asks for or stores your private key or seed phrase.</p>
         </div>
+        {protocolPaused && (
+          <div className="rounded-md border border-danger/35 bg-danger/[0.07] px-3 py-2.5">
+            <div className="flex items-center justify-between gap-3"><span className="panel-title text-danger">Flipt execution paused on-chain</span><span className="font-mono text-[8px] text-danger">SCOPE {pausedScopes}</span></div>
+            <p className="mt-1.5 text-[9px] leading-relaxed text-text-secondary">Flipt has disabled core or graduated-pool execution. No wallet can trade through the Hub right now. Starting the bot keeps it armed; scans and wallet prompts resume automatically after Flipt unpauses.</p>
+          </div>
+        )}
         {position && (
           <div className={cn('rounded-md border p-4', running ? 'border-accent-primary/30 bg-accent-primary/5' : 'border-warning/30 bg-warning/5')}>
             <div className="flex items-center justify-between gap-3"><span className="panel-title">Current position</span><span className={cn('flex items-center gap-1 text-right font-mono text-[8px]', running ? 'text-success' : 'text-warning')}><span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', running ? 'animate-pulse-dot bg-success' : 'bg-warning')} /> {running ? 'MONITORING' : 'UNMANAGED · START TO RESUME'}</span></div>

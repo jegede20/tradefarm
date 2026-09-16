@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { formatUnits, isAddress, parseUnits, type Address } from 'viem'
 import { useAccount, usePublicClient } from 'wagmi'
-import { ERC20_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from '@/lib/contracts'
-import { friendlyContractError, getMarketSnapshot, getPairQuote } from '@/lib/flipt'
+import { ERC20_ABI, ROUTER_ABI, ROUTER_ADDRESS, TOKEN_METADATA_ABI, USDC_ADDRESS } from '@/lib/contracts'
+import { friendlyContractError, getMarketSnapshot, getPairQuote, isFliptProtocolPausedError, isPreSubmissionSimulationError } from '@/lib/flipt'
 import { getFliptTopPositionSnapshot } from '@/lib/fliptLeaderboard'
 import {
   assessRecentSellShock,
@@ -33,6 +33,8 @@ export function useBotRunner() {
   const cooldownTokens = useRef(new Map<string, number>())
   const rpcFailureStreak = useRef(0)
   const activityWaitLoggedAt = useRef(0)
+  const protocolPauseLoggedAt = useRef(0)
+  const protocolWasPaused = useRef(false)
   const sessionWallet = useRef<Address | null>(null)
   const mounted = useRef(true)
 
@@ -69,6 +71,7 @@ export function useBotRunner() {
     // blocks instead of waiting a full scan interval.
     let nextDelay = before.botPosition ? Math.min(config.delaySeconds * 1_000, 3_000) : config.delaySeconds * 1_000
     let transientFailure = false
+    let pendingCandidate: { token: Address; symbol: string } | null = null
 
     try {
       const state = useTradeFarmStore.getState()
@@ -92,6 +95,33 @@ export function useBotRunner() {
           log('WAIT', `Defending rank #${state.botLeaderboardRank}. New entries paused while target holds.`)
           return
         }
+      }
+
+      // Scope bits 0 and 1 are Flipt's core and pool execution pauses. Read the
+      // source of truth before scanning or repricing a managed exit so a global
+      // protocol pause never opens the wallet or floods repeated scans.
+      const pausedScopes = Number(await publicClient.readContract({
+        address: ROUTER_ADDRESS,
+        abi: ROUTER_ABI,
+        functionName: 'pausedScopes',
+      }))
+      const poolExecutionPaused = (pausedScopes & 0b011) !== 0
+      if (poolExecutionPaused) {
+        protocolWasPaused.current = true
+        const now = Date.now()
+        if (now - protocolPauseLoggedAt.current >= 30_000) {
+          log('WAIT', state.botPosition
+            ? `Flipt execution is paused on-chain (scope ${pausedScopes}). The position remains tracked; exit checks resume automatically after Flipt unpauses.`
+            : `Flipt execution is paused on-chain (scope ${pausedScopes}). Scans and wallet requests are suspended; the bot will retry automatically.`)
+          protocolPauseLoggedAt.current = now
+        }
+        nextDelay = 5_000
+        return
+      }
+      if (protocolWasPaused.current) {
+        log('INFO', 'Flipt core/pool execution resumed on-chain. Continuing the bot cycle.')
+        protocolWasPaused.current = false
+        protocolPauseLoggedAt.current = 0
       }
 
       const activitySnapshotStale = !state.marketActivityLastUpdated || Date.now() - state.marketActivityLastUpdated > 90_000
@@ -390,7 +420,9 @@ export function useBotRunner() {
       const allowance = await publicClient.readContract({ address: USDC_ADDRESS, abi: ERC20_ABI, functionName: 'allowance', args: [address, ROUTER_ADDRESS] })
       if (allowance < amountIn) log('BUY', 'Flipt USDC approval required.')
       if (useTradeFarmStore.getState().botStatus !== 'running') return
+      pendingCandidate = { token: tokenAddress, symbol }
       const result = await executeBuy({ token: tokenAddress, symbol, amount: actualTradeSize.toFixed(2), slippagePct: config.slippagePct, expectedOut, shouldSubmit: () => useTradeFarmStore.getState().botStatus === 'running' })
+      pendingCandidate = null
       const tokenAmount = Number(formatUnits(result.amountOut, 18))
       const entryPrice = actualTradeSize / tokenAmount
       useTradeFarmStore.getState().setBotPosition({
@@ -414,7 +446,19 @@ export function useBotRunner() {
       nextDelay = Math.min(config.delaySeconds * 1_000, 3_000)
     } catch (cause) {
       if (useTradeFarmStore.getState().botStatus !== 'running') return
-      if (isTransientArcRpcError(cause)) {
+      if (isFliptProtocolPausedError(cause)) {
+        protocolWasPaused.current = true
+        protocolPauseLoggedAt.current = Date.now()
+        nextDelay = 5_000
+        log('WAIT', `${friendlyContractError(cause)} No transaction was sent; the bot will retry automatically.`)
+      } else if (isPreSubmissionSimulationError(cause)) {
+        const hasPosition = Boolean(useTradeFarmStore.getState().botPosition)
+        if (pendingCandidate) cooldownTokens.current.set(pendingCandidate.token.toLowerCase(), 2)
+        nextDelay = hasPosition ? 1_000 : 1_500
+        log('WAIT', hasPosition
+          ? `Exit rejected by exact pre-submission simulation: ${friendlyContractError(cause)} The position remains tracked and will be repriced.`
+          : `${pendingCandidate?.symbol ?? 'Candidate'} rejected by exact pre-submission simulation: ${friendlyContractError(cause)} Skipping it without opening the wallet.`)
+      } else if (isTransientArcRpcError(cause)) {
         transientFailure = true
         rpcFailureStreak.current += 1
         nextDelay = Math.min(2_000 * 2 ** (rpcFailureStreak.current - 1), 30_000)
@@ -454,6 +498,8 @@ export function useBotRunner() {
     if (intervalRef.current !== null) window.clearInterval(intervalRef.current)
     sessionWallet.current = address
     activityWaitLoggedAt.current = 0
+    protocolPauseLoggedAt.current = 0
+    protocolWasPaused.current = false
     signalHistory.current.clear()
     useTradeFarmStore.getState().resetBotSession()
     useTradeFarmStore.getState().setBotStatus('running')

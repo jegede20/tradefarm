@@ -16,6 +16,8 @@ export const CURVE_BUY_SELECTOR = '0xa59ac6dd' as const
 export const GRADUATE_SELECTOR = '0xff6d8d05' as const
 export const HUB_BUY_EVENT_TOPIC = '0x112dc08c6be44af9aebcd443037a82482908589198e8a4682ba423a81c87202f' as const
 export const HUB_SELL_EVENT_TOPIC = '0x3a3fb3844a4a3578d1c660c5d0d81d6a02d050152df03f2a3e732a4b07c1a9e6' as const
+export const CORE_PAUSED_ERROR_SELECTOR = '0x8ae7acea' as const
+export const POOLS_PAUSED_ERROR_SELECTOR = '0x4b171ae7' as const
 
 export const ROUTER_ABI = [
   {
@@ -37,6 +39,18 @@ export const ROUTER_ABI = [
   {
     name: 'usdc', type: 'function', stateMutability: 'view',
     inputs: [], outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    name: 'pausedScopes', type: 'function', stateMutability: 'view',
+    inputs: [], outputs: [{ name: '', type: 'uint8' }],
+  },
+  {
+    name: 'poolsPaused', type: 'function', stateMutability: 'view',
+    inputs: [], outputs: [{ name: '', type: 'bool' }],
+  },
+  {
+    name: 'ordersPaused', type: 'function', stateMutability: 'view',
+    inputs: [], outputs: [{ name: '', type: 'bool' }],
   },
   {
     name: 'allPairsLength', type: 'function', stateMutability: 'view',
