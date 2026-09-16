@@ -68,7 +68,7 @@ export function BotControls() {
       strategyMode: 'rank',
       objectiveMode: 'reach',
       tradeSize: 50_000,
-      delaySeconds: 10,
+      delaySeconds: 5,
       minBuyPressurePct: 30,
       maxBuyPressurePct: 97,
       minSellDepthMultiple: 0.25,
