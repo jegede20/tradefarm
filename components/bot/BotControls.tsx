@@ -72,8 +72,8 @@ export function BotControls() {
       minBuyPressurePct: 50,
       maxBuyPressurePct: 95,
       minSellDepthMultiple: 0.25,
-      maxSessionLoss: Math.max(config.maxSessionLoss, 5_000),
-      maxConsecutiveLosses: Math.max(config.maxConsecutiveLosses, 6),
+      maxSessionLoss: Math.max(config.maxSessionLoss, 6_000),
+      maxConsecutiveLosses: Math.max(config.maxConsecutiveLosses, 7),
     })
   }
 
@@ -118,9 +118,9 @@ export function BotControls() {
         {!position && config.strategyMode === 'profit' && !rankReached && (
           <div className="rounded-md border border-warning/35 bg-warning/[0.07] p-3">
             <p className="panel-title text-warning">Leaderboard deadline mismatch</p>
-            <p className="mt-2 text-[10px] leading-relaxed text-text-secondary">Profit-first can correctly wait without trading during quiet or one-sided markets. The Rank Sprint preset requests up to 50,000 USDC per cycle, allows six expected losing rotations, and explicitly arms a 5,000 USDC hard ranking-loss budget.</p>
+            <p className="mt-2 text-[10px] leading-relaxed text-text-secondary">Profit-first can correctly wait without trading during quiet or one-sided markets. The Rank Sprint preset requests up to 50,000 USDC per cycle, permits seven expected losing rotations, and explicitly arms a 6,000 USDC hard ranking-loss budget.</p>
             <button type="button" onClick={activateRankSprint} className="mt-3 flex h-9 w-full items-center justify-center rounded-md border border-warning/40 bg-warning/15 text-[9px] font-bold uppercase tracking-wider text-warning transition hover:bg-warning/25">
-              {running ? 'Stop & arm rank sprint · 5,000 max loss' : 'Use rank sprint · 5,000 max loss'}
+              {running ? 'Stop & arm rank sprint · 6,000 max loss' : 'Use rank sprint · 6,000 max loss'}
             </button>
           </div>
         )}
